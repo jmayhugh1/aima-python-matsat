@@ -30,13 +30,24 @@ And a few other functions:
     unify            Do unification of two FOL sentences
     diff, simp       Symbolic differentiation and simplification
 """
+
 import itertools
 import random
 from collections import defaultdict
 
 from agents import Agent, Glitter, Bump, Stench, Breeze, Scream
 from search import astar_search, PlanRoute
-from utils4e import remove_all, unique, first, probability, isnumber, issequence, Expr, expr, subexpressions
+from utils4e import (
+    remove_all,
+    unique,
+    first,
+    probability,
+    isnumber,
+    issequence,
+    Expr,
+    expr,
+    subexpressions,
+)
 
 
 # ______________________________________________________________________________
@@ -90,7 +101,7 @@ class PropKB(KB):
 
     def ask_generator(self, query):
         """Yield the empty substitution {} if KB entails query; else no results."""
-        if tt_entails(Expr('&', *self.clauses), query):
+        if tt_entails(Expr("&", *self.clauses), query):
             yield {}
 
     def ask_if_true(self, query):
@@ -124,7 +135,7 @@ def KB_AgentProgram(KB):
         return expr("ShouldDo(action, {})".format(t))
 
     def make_action_sentence(action, t):
-        return Expr("Did")(action[expr('action')], t)
+        return Expr("Did")(action[expr("action")], t)
 
     return program
 
@@ -137,101 +148,101 @@ def KB_AgentProgram(KB):
 
 
 def facing_east(time):
-    return Expr('FacingEast', time)
+    return Expr("FacingEast", time)
 
 
 def facing_west(time):
-    return Expr('FacingWest', time)
+    return Expr("FacingWest", time)
 
 
 def facing_north(time):
-    return Expr('FacingNorth', time)
+    return Expr("FacingNorth", time)
 
 
 def facing_south(time):
-    return Expr('FacingSouth', time)
+    return Expr("FacingSouth", time)
 
 
 def wumpus(x, y):
-    return Expr('W', x, y)
+    return Expr("W", x, y)
 
 
 def pit(x, y):
-    return Expr('P', x, y)
+    return Expr("P", x, y)
 
 
 def breeze(x, y):
-    return Expr('B', x, y)
+    return Expr("B", x, y)
 
 
 def stench(x, y):
-    return Expr('S', x, y)
+    return Expr("S", x, y)
 
 
 def wumpus_alive(time):
-    return Expr('WumpusAlive', time)
+    return Expr("WumpusAlive", time)
 
 
 def have_arrow(time):
-    return Expr('HaveArrow', time)
+    return Expr("HaveArrow", time)
 
 
 def percept_stench(time):
-    return Expr('Stench', time)
+    return Expr("Stench", time)
 
 
 def percept_breeze(time):
-    return Expr('Breeze', time)
+    return Expr("Breeze", time)
 
 
 def percept_glitter(time):
-    return Expr('Glitter', time)
+    return Expr("Glitter", time)
 
 
 def percept_bump(time):
-    return Expr('Bump', time)
+    return Expr("Bump", time)
 
 
 def percept_scream(time):
-    return Expr('Scream', time)
+    return Expr("Scream", time)
 
 
 def move_forward(time):
-    return Expr('Forward', time)
+    return Expr("Forward", time)
 
 
 def shoot(time):
-    return Expr('Shoot', time)
+    return Expr("Shoot", time)
 
 
 def turn_left(time):
-    return Expr('TurnLeft', time)
+    return Expr("TurnLeft", time)
 
 
 def turn_right(time):
-    return Expr('TurnRight', time)
+    return Expr("TurnRight", time)
 
 
 def ok_to_move(x, y, time):
-    return Expr('OK', x, y, time)
+    return Expr("OK", x, y, time)
 
 
 def location(x, y, time=None):
     if time is None:
-        return Expr('L', x, y)
+        return Expr("L", x, y)
     else:
-        return Expr('L', x, y, time)
+        return Expr("L", x, y, time)
 
 
 # Symbols
 
 
 def implies(lhs, rhs):
-    return Expr('==>', lhs, rhs)
+    return Expr("==>", lhs, rhs)
 
 
 def equiv(lhs, rhs):
-    return Expr('<=>', lhs, rhs)
+    return Expr("<=>", lhs, rhs)
 
 
 # Helper Function
@@ -290,10 +301,11 @@ def is_definite_clause(s):
     """
     if is_symbol(s.op):
         return True
-    elif s.op == '==>':
+    elif s.op == "==>":
         antecedent, consequent = s.args
-        return (is_symbol(consequent.op) and
-                all(is_symbol(arg.op) for arg in conjuncts(antecedent)))
+        return is_symbol(consequent.op) and all(
+            is_symbol(arg.op) for arg in conjuncts(antecedent)
+        )
     else:
         return False
 
@@ -309,7 +321,7 @@ def parse_definite_clause(s):
 
 
 # Useful constant Exprs used in examples and code:
-A, B, C, D, E, F, G, P, Q, x, y, z = map(Expr, 'ABCDEFGPQxyz')
+A, B, C, D, E, F, G, P, Q, x, y, z = map(Expr, "ABCDEFGPQxyz")
 
 
 # ______________________________________________________________________________
@@ -340,8 +352,9 @@ def tt_check_all(kb, alpha, symbols, model):
             return True
     else:
         P, rest = symbols[0], symbols[1:]
-        return (tt_check_all(kb, alpha, rest, extend(model, P, True)) and
-                tt_check_all(kb, alpha, rest, extend(model, P, False)))
+        return tt_check_all(kb, alpha, rest, extend(model, P, True)) and tt_check_all(
+            kb, alpha, rest, extend(model, P, False)
+        )
 
 
 def prop_symbols(x):
@@ -399,13 +412,13 @@ def pl_true(exp, model={}):
     op, args = exp.op, exp.args
     if is_prop_symbol(op):
         return model.get(exp)
-    elif op == '~':
+    elif op == "~":
         p = pl_true(args[0], model)
         if p is None:
             return None
         else:
             return not p
-    elif op == '|':
+    elif op == "|":
         result = False
         for arg in args:
             p = pl_true(arg, model)
@@ -414,7 +427,7 @@ def pl_true(exp, model={}):
             if p is None:
                 result = None
         return result
-    elif op == '&':
+    elif op == "&":
         result = True
         for arg in args:
             p = pl_true(arg, model)
@@ -424,9 +437,9 @@ def pl_true(exp, model={}):
                 result = None
         return result
     p, q = args
-    if op == '==>':
+    if op == "==>":
         return pl_true(~p | q, model)
-    elif op == '<==':
+    elif op == "<==":
         return pl_true(p | ~q, model)
     pt = pl_true(p, model)
     if pt is None:
@@ -434,9 +447,9 @@ def pl_true(exp, model={}):
     qt = pl_true(q, model)
     if qt is None:
         return None
-    if op == '<=>':
+    if op == "<=>":
         return pt == qt
-    elif op == '^':  # xor or 'not equivalent'
+    elif op == "^":  # xor or 'not equivalent'
         return pt != qt
     else:
         raise ValueError("illegal operator in logic expression" + str(exp))
@@ -467,17 +480,17 @@ def eliminate_implications(s):
         return s  # Atoms are unchanged.
     args = list(map(eliminate_implications, s.args))
     a, b = args[0], args[-1]
-    if s.op == '==>':
+    if s.op == "==>":
         return b | ~a
-    elif s.op == '<==':
+    elif s.op == "<==":
         return a | ~b
-    elif s.op == '<=>':
+    elif s.op == "<=>":
         return (a | ~b) & (b | ~a)
-    elif s.op == '^':
+    elif s.op == "^":
         assert len(args) == 2  # TODO: relax this restriction
         return (a & ~b) | (~a & b)
     else:
-        assert s.op in ('&', '|', '~')
+        assert s.op in ("&", "|", "~")
         return Expr(s.op, *args)
 
 
@@ -487,17 +500,18 @@ def move_not_inwards(s):
     (~A & ~B)
     """
     s = expr(s)
-    if s.op == '~':
+    if s.op == "~":
+
         def NOT(b):
             return move_not_inwards(~b)
 
         a = s.args[0]
-        if a.op == '~':
+        if a.op == "~":
             return move_not_inwards(a.args[0])  # ~~A ==> A
-        if a.op == '&':
-            return associate('|', list(map(NOT, a.args)))
-        if a.op == '|':
-            return associate('&', list(map(NOT, a.args)))
+        if a.op == "&":
+            return associate("|", list(map(NOT, a.args)))
+        if a.op == "|":
+            return associate("&", list(map(NOT, a.args)))
         return s
     elif is_symbol(s.op) or not s.args:
         return s
@@ -512,23 +526,22 @@ def distribute_and_over_or(s):
     ((A | C) & (B | C))
     """
     s = expr(s)
-    if s.op == '|':
-        s = associate('|', s.args)
-        if s.op != '|':
+    if s.op == "|":
+        s = associate("|", s.args)
+        if s.op != "|":
             return distribute_and_over_or(s)
         if len(s.args) == 0:
             return False
         if len(s.args) == 1:
             return distribute_and_over_or(s.args[0])
-        conj = first(arg for arg in s.args if arg.op == '&')
+        conj = first(arg for arg in s.args if arg.op == "&")
         if not conj:
             return s
         others = [a for a in s.args if a is not conj]
-        rest = associate('|', others)
-        return associate('&', [distribute_and_over_or(c | rest)
-                               for c in conj.args])
-    elif s.op == '&':
-        return associate('&', list(map(distribute_and_over_or, s.args)))
+        rest = associate("|", others)
+        return associate("&", [distribute_and_over_or(c | rest) for c in conj.args])
+    elif s.op == "&":
+        return associate("&", list(map(distribute_and_over_or, s.args)))
     else:
         return s
 
@@ -551,7 +564,7 @@ def associate(op, args):
         return Expr(op, *args)
 
 
-_op_identity = {'&': True, '|': False, '+': 0, '*': 1}
+_op_identity = {"&": True, "|": False, "+": 0, "*": 1}
 
 
 def dissociate(op, args):
@@ -580,7 +593,7 @@ def conjuncts(s):
     >>> conjuncts(A | B)
     [(A | B)]
     """
-    return dissociate('&', [s])
+    return dissociate("&", [s])
 
 
 def disjuncts(s):
@@ -590,7 +603,7 @@ def disjuncts(s):
     >>> disjuncts(A & B)
     [(A & B)]
     """
-    return dissociate('|', [s])
+    return dissociate("|", [s])
 
 
 # ______________________________________________________________________________
@@ -606,9 +619,8 @@ def pl_resolution(KB, alpha):
     new = set()
     while True:
         n = len(clauses)
-        pairs = [(clauses[i], clauses[j])
-                 for i in range(n) for j in range(i + 1, n)]
-        for (ci, cj) in pairs:
+        pairs = [(clauses[i], clauses[j]) for i in range(n) for j in range(i + 1, n)]
+        for ci, cj in pairs:
             resolvents = pl_resolve(ci, cj)
             if False in resolvents:
                 return True
@@ -626,9 +638,10 @@ def pl_resolve(ci, cj):
     for di in disjuncts(ci):
         for dj in disjuncts(cj):
             if di == ~dj or ~di == dj:
-                dnew = unique(remove_all(di, disjuncts(ci)) +
-                              remove_all(dj, disjuncts(cj)))
-                clauses.append(associate('|', dnew))
+                dnew = unique(
+                    remove_all(di, disjuncts(ci)) + remove_all(dj, disjuncts(cj))
+                )
+                clauses.append(associate("|", dnew))
     return clauses
 
 
@@ -655,8 +668,7 @@ class PropDefiniteKB(PropKB):
     def clauses_with_premise(self, p):
         """Return a list of the clauses in KB that have p in their premise.
         This could be cached away for O(1) speed, but we'll recompute it."""
-        return [c for c in self.clauses
-                if c.op == '==>' and p in conjuncts(c.args[0])]
+        return [c for c in self.clauses if c.op == "==>" and p in conjuncts(c.args[0])]
 
 
 def pl_fc_entails(KB, q):
@@ -665,9 +677,7 @@ def pl_fc_entails(KB, q):
     >>> pl_fc_entails(horn_clauses_KB, expr('Q'))
     True
     """
-    count = {c: len(conjuncts(c.args[0]))
-             for c in KB.clauses
-             if c.op == '==>'}
+    count = {c: len(conjuncts(c.args[0])) for c in KB.clauses if c.op == "==>"}
     inferred = defaultdict(bool)
     agenda = [s for s in KB.clauses if is_prop_symbol(s.op)]
     while agenda:
@@ -692,15 +702,24 @@ wumpus_world_inference = expr("(B11 <=> (P12 | P21))  &  ~B11")
 Propositional Logic Forward Chaining example
 """
 horn_clauses_KB = PropDefiniteKB()
-for s in "P==>Q; (L&M)==>P; (B&L)==>M; (A&P)==>L; (A&B)==>L; A;B".split(';'):
+for s in "P==>Q; (L&M)==>P; (B&L)==>M; (A&P)==>L; (A&B)==>L; A;B".split(";"):
     horn_clauses_KB.tell(expr(s))
 
 """
 Definite clauses KB example
 """
 definite_clauses_KB = PropDefiniteKB()
-for clause in ['(B & F)==>E', '(A & E & F)==>G', '(B & C)==>F', '(A & B)==>D', '(E & F)==>H', '(H & I)==>J', 'A', 'B',
-               'C']:
+for clause in [
+    "(B & F)==>E",
+    "(A & E & F)==>G",
+    "(B & C)==>F",
+    "(A & B)==>D",
+    "(E & F)==>H",
+    "(H & I)==>J",
+    "A",
+    "B",
+    "C",
+]:
     definite_clauses_KB.tell(expr(clause))
 
 
@@ -743,8 +762,9 @@ def dpll(clauses, symbols, model):
     if not symbols:
         raise TypeError("Argument should be of the type Expr.")
     P, symbols = symbols[0], symbols[1:]
-    return (dpll(clauses, symbols, extend(model, P, True)) or
-            dpll(clauses, symbols, extend(model, P, False)))
+    return dpll(clauses, symbols, extend(model, P, True)) or dpll(
+        clauses, symbols, extend(model, P, False)
+    )
 
 
 def find_pure_symbol(symbols, clauses):
@@ -811,7 +831,7 @@ def inspect_literal(literal):
     >>> inspect_literal(~P)
     (P, False)
     """
-    if literal.op == '~':
+    if literal.op == "~":
         return literal.args[0], False
     else:
         return literal, True
@@ -917,8 +937,12 @@ class WumpusKB(PropKB):
         self.tell(location(1, 1, 0))
         for i in range(1, dimrow + 1):
             for j in range(1, dimrow + 1):
-                self.tell(implies(location(i, j, 0), equiv(percept_breeze(0), breeze(i, j))))
-                self.tell(implies(location(i, j, 0), equiv(percept_stench(0), stench(i, j))))
+                self.tell(
+                    implies(location(i, j, 0), equiv(percept_breeze(0), breeze(i, j)))
+                )
+                self.tell(
+                    implies(location(i, j, 0), equiv(percept_stench(0), stench(i, j)))
+                )
                 if i != 1 or j != 1:
                     self.tell(~location(i, j, 0))
 
@@ -981,14 +1005,25 @@ class WumpusKB(PropKB):
         # current location rules
         for i in range(1, self.dimrow + 1):
             for j in range(1, self.dimrow + 1):
-                self.tell(implies(location(i, j, time), equiv(percept_breeze(time), breeze(i, j))))
-                self.tell(implies(location(i, j, time), equiv(percept_stench(time), stench(i, j))))
+                self.tell(
+                    implies(
+                        location(i, j, time), equiv(percept_breeze(time), breeze(i, j))
+                    )
+                )
+                self.tell(
+                    implies(
+                        location(i, j, time), equiv(percept_stench(time), stench(i, j))
+                    )
+                )
 
                 s = list()
 
                 s.append(
                     equiv(
-                        location(i, j, time), location(i, j, time) & ~move_forward(time) | percept_bump(time)))
+                        location(i, j, time),
+                        location(i, j, time) & ~move_forward(time) | percept_bump(time),
+                    )
+                )
 
                 if i != 1:
                     s.append(location(i - 1, j, t) & facing_east(t) & move_forward(t))
@@ -1007,7 +1042,10 @@ class WumpusKB(PropKB):
 
                 # add sentence about safety of location i,j
                 self.tell(
-                    equiv(ok_to_move(i, j, time), ~pit(i, j) & ~wumpus(i, j) & wumpus_alive(time))
+                    equiv(
+                        ok_to_move(i, j, time),
+                        ~pit(i, j) & ~wumpus(i, j) & wumpus_alive(time),
+                    )
                 )
 
         # Rules about current orientation
@@ -1072,8 +1110,10 @@ class WumpusPosition:
         self.orientation = orientation
 
     def __eq__(self, other):
-        if (other.get_location() == self.get_location() and
-                other.get_orientation() == self.get_orientation()):
+        if (
+            other.get_location() == self.get_location()
+            and other.get_orientation() == self.get_orientation()
+        ):
             return True
         else:
             return False
@@ -1086,12 +1126,12 @@ class WumpusPosition:
 class HybridWumpusAgent(Agent):
     """An agent for the wumpus world that does logical inference. [Figure 7.20]"""
 
-    def __init__(self, dimentions):
+    def __init__(self, dimentions, kb_class=WumpusKB):
         self.dimrow = dimentions
-        self.kb = WumpusKB(self.dimrow)
+        self.kb = kb_class(self.dimrow)
         self.t = 0
         self.plan = list()
-        self.current_position = WumpusPosition(1, 1, 'UP')
+        self.current_position = WumpusPosition(1, 1, "UP")
         super().__init__(self.execute)
 
     def execute(self, percept):
@@ -1107,13 +1147,13 @@ class HybridWumpusAgent(Agent):
                     temp.append(j)
 
         if self.kb.ask_if_true(facing_north(self.t)):
-            self.current_position = WumpusPosition(temp[0], temp[1], 'UP')
+            self.current_position = WumpusPosition(temp[0], temp[1], "UP")
         elif self.kb.ask_if_true(facing_south(self.t)):
-            self.current_position = WumpusPosition(temp[0], temp[1], 'DOWN')
+            self.current_position = WumpusPosition(temp[0], temp[1], "DOWN")
         elif self.kb.ask_if_true(facing_west(self.t)):
-            self.current_position = WumpusPosition(temp[0], temp[1], 'LEFT')
+            self.current_position = WumpusPosition(temp[0], temp[1], "LEFT")
         elif self.kb.ask_if_true(facing_east(self.t)):
-            self.current_position = WumpusPosition(temp[0], temp[1], 'RIGHT')
+            self.current_position = WumpusPosition(temp[0], temp[1], "RIGHT")
 
         safe_points = list()
         for i in range(1, self.dimrow + 1):
@@ -1124,10 +1164,10 @@ class HybridWumpusAgent(Agent):
         if self.kb.ask_if_true(percept_glitter(self.t)):
             goals = list()
             goals.append([1, 1])
-            self.plan.append('Grab')
+            self.plan.append("Grab")
             actions = self.plan_route(self.current_position, goals, safe_points)
             self.plan.extend(actions)
-            self.plan.append('Climb')
+            self.plan.append("Climb")
 
         if len(self.plan) == 0:
             unvisited = list()
@@ -1142,7 +1182,9 @@ class HybridWumpusAgent(Agent):
                     if u not in unvisited_and_safe and s == u:
                         unvisited_and_safe.append(u)
 
-            temp = self.plan_route(self.current_position, unvisited_and_safe, safe_points)
+            temp = self.plan_route(
+                self.current_position, unvisited_and_safe, safe_points
+            )
             self.plan.extend(temp)
 
         if len(self.plan) == 0 and self.kb.ask_if_true(have_arrow(self.t)):
@@ -1169,7 +1211,7 @@ class HybridWumpusAgent(Agent):
             start.append([1, 1])
             temp = self.plan_route(self.current_position, start, safe_points)
             self.plan.extend(temp)
-            self.plan.append('Climb')
+            self.plan.append("Climb")
 
         action = self.plan[0]
         self.plan = self.plan[1:]
@@ -1190,23 +1232,23 @@ class HybridWumpusAgent(Agent):
             y = loc[1]
             for i in range(1, self.dimrow + 1):
                 if i < x:
-                    shooting_positions.add(WumpusPosition(i, y, 'EAST'))
+                    shooting_positions.add(WumpusPosition(i, y, "EAST"))
                 if i > x:
-                    shooting_positions.add(WumpusPosition(i, y, 'WEST'))
+                    shooting_positions.add(WumpusPosition(i, y, "WEST"))
                 if i < y:
-                    shooting_positions.add(WumpusPosition(x, i, 'NORTH'))
+                    shooting_positions.add(WumpusPosition(x, i, "NORTH"))
                 if i > y:
-                    shooting_positions.add(WumpusPosition(x, i, 'SOUTH'))
+                    shooting_positions.add(WumpusPosition(x, i, "SOUTH"))
 
         # Can't have a shooting position from any of the rooms the Wumpus could reside
-        orientations = ['EAST', 'WEST', 'NORTH', 'SOUTH']
+        orientations = ["EAST", "WEST", "NORTH", "SOUTH"]
         for loc in goals:
             for orientation in orientations:
                 shooting_positions.remove(WumpusPosition(loc[0], loc[1], orientation))
 
         actions = list()
         actions.extend(self.plan_route(current, shooting_positions, allowed))
-        actions.append('Shoot')
+        actions.append("Shoot")
         return actions
 
 
@@ -1247,19 +1289,22 @@ def SAT_plan(init, transition, goal, t_max, SAT_solver=dpll_satisfiable):
                 for t in range(time):
                     # Action 'action' taken from state 's' at time 't' to reach 's_'
                     action_sym[s, action, t] = Expr(
-                        "Transition_{}".format(next(transition_counter)))
+                        "Transition_{}".format(next(transition_counter))
+                    )
 
                     # Change the state from s to s_
-                    clauses.append(action_sym[s, action, t] | '==>' | state_sym[s, t])
-                    clauses.append(action_sym[s, action, t] | '==>' | state_sym[s_, t + 1])
+                    clauses.append(action_sym[s, action, t] | "==>" | state_sym[s, t])
+                    clauses.append(
+                        action_sym[s, action, t] | "==>" | state_sym[s_, t + 1]
+                    )
 
         # Allow only one state at any time
         for t in range(time + 1):
             # must be a state at any time
-            clauses.append(associate('|', [state_sym[s, t] for s in states]))
+            clauses.append(associate("|", [state_sym[s, t] for s in states]))
 
             for s in states:
-                for s_ in states[states.index(s) + 1:]:
+                for s_ in states[states.index(s) + 1 :]:
                     # for each pair of states s, s_ only one is possible at time t
                     clauses.append((~state_sym[s, t]) | (~state_sym[s_, t]))
 
@@ -1269,15 +1314,15 @@ def SAT_plan(init, transition, goal, t_max, SAT_solver=dpll_satisfiable):
             transitions_t = [tr for tr in action_sym if tr[2] == t]
 
             # make sure at least one of the transitions happens
-            clauses.append(associate('|', [action_sym[tr] for tr in transitions_t]))
+            clauses.append(associate("|", [action_sym[tr] for tr in transitions_t]))
 
             for tr in transitions_t:
-                for tr_ in transitions_t[transitions_t.index(tr) + 1:]:
+                for tr_ in transitions_t[transitions_t.index(tr) + 1 :]:
                     # there cannot be two transitions tr and tr_ at time t
                     clauses.append(~action_sym[tr] | ~action_sym[tr_])
 
         # Combine the clauses to form the cnf
-        return associate('&', clauses)
+        return associate("&", clauses)
 
     def extract_solution(model):
         true_transitions = [t for t in action_sym if model[action_sym[t]]]
@@ -1355,8 +1400,7 @@ def occur_check(var, x, s):
     elif is_variable(x) and x in s:
         return occur_check(var, s[x], s)
     elif isinstance(x, Expr):
-        return (occur_check(var, x.op, s) or
-                occur_check(var, x.args, s))
+        return occur_check(var, x.op, s) or occur_check(var, x.args, s)
     elif isinstance(x, (list, tuple)):
         return first(e for e in x if occur_check(var, e, s))
     else:
@@ -1477,12 +1521,13 @@ def standardize_variables(sentence, dic=None):
         if sentence in dic:
             return dic[sentence]
         else:
-            v = Expr('v_{}'.format(next(standardize_variables.counter)))
+            v = Expr("v_{}".format(next(standardize_variables.counter)))
             dic[sentence] = v
             return v
     else:
-        return Expr(sentence.op,
-                    *[standardize_variables(a, dic) for a in sentence.args])
+        return Expr(
+            sentence.op, *[standardize_variables(a, dic) for a in sentence.args]
+        )
 
 
 standardize_variables.counter = itertools.count()
@@ -1522,36 +1567,48 @@ def fol_bc_and(KB, goals, theta):
 # See Sec. 7.4.3
 wumpus_kb = PropKB()
 
-P11, P12, P21, P22, P31, B11, B21 = expr('P11, P12, P21, P22, P31, B11, B21')
+P11, P12, P21, P22, P31, B11, B21 = expr("P11, P12, P21, P22, P31, B11, B21")
 wumpus_kb.tell(~P11)
-wumpus_kb.tell(B11 | '<=>' | (P12 | P21))
-wumpus_kb.tell(B21 | '<=>' | (P11 | P22 | P31))
+wumpus_kb.tell(B11 | "<=>" | (P12 | P21))
+wumpus_kb.tell(B21 | "<=>" | (P11 | P22 | P31))
 wumpus_kb.tell(~B11)
 wumpus_kb.tell(B21)
 
 test_kb = FolKB(
-    map(expr, ['Farmer(Mac)',
-               'Rabbit(Pete)',
-               'Mother(MrsMac, Mac)',
-               'Mother(MrsRabbit, Pete)',
-               '(Rabbit(r) & Farmer(f)) ==> Hates(f, r)',
-               '(Mother(m, c)) ==> Loves(m, c)',
-               '(Mother(m, r) & Rabbit(r)) ==> Rabbit(m)',
-               '(Farmer(f)) ==> Human(f)',
-               # Note that this order of conjuncts
-               # would result in infinite recursion:
-               # '(Human(h) & Mother(m, h)) ==> Human(m)'
-               '(Mother(m, h) & Human(h)) ==> Human(m)']))
+    map(
+        expr,
+        [
+            "Farmer(Mac)",
+            "Rabbit(Pete)",
+            "Mother(MrsMac, Mac)",
+            "Mother(MrsRabbit, Pete)",
+            "(Rabbit(r) & Farmer(f)) ==> Hates(f, r)",
+            "(Mother(m, c)) ==> Loves(m, c)",
+            "(Mother(m, r) & Rabbit(r)) ==> Rabbit(m)",
+            "(Farmer(f)) ==> Human(f)",
+            # Note that this order of conjuncts
+            # would result in infinite recursion:
+            # '(Human(h) & Mother(m, h)) ==> Human(m)'
+            "(Mother(m, h) & Human(h)) ==> Human(m)",
+        ],
+    )
+)
 
 crime_kb = FolKB(
-    map(expr, ['(American(x) & Weapon(y) & Sells(x, y, z) & Hostile(z)) ==> Criminal(x)',
-               'Owns(Nono, M1)',
-               'Missile(M1)',
-               '(Missile(x) & Owns(Nono, x)) ==> Sells(West, x, Nono)',
-               'Missile(x) ==> Weapon(x)',
-               'Enemy(x, America) ==> Hostile(x)',
-               'American(West)',
-               'Enemy(Nono, America)']))
+    map(
+        expr,
+        [
+            "(American(x) & Weapon(y) & Sells(x, y, z) & Hostile(z)) ==> Criminal(x)",
+            "Owns(Nono, M1)",
+            "Missile(M1)",
+            "(Missile(x) & Owns(Nono, x)) ==> Sells(West, x, Nono)",
+            "Missile(x) ==> Weapon(x)",
+            "Enemy(x, America) ==> Hostile(x)",
+            "American(West)",
+            "Enemy(Nono, America)",
+        ],
+    )
+)
 
 
 # ______________________________________________________________________________
@@ -1573,22 +1630,21 @@ def diff(y, x):
         return 0
     else:
         u, op, v = y.args[0], y.op, y.args[-1]
-        if op == '+':
+        if op == "+":
             return diff(u, x) + diff(v, x)
-        elif op == '-' and len(y.args) == 1:
+        elif op == "-" and len(y.args) == 1:
             return -diff(u, x)
-        elif op == '-':
+        elif op == "-":
             return diff(u, x) - diff(v, x)
-        elif op == '*':
+        elif op == "*":
             return u * diff(v, x) + v * diff(u, x)
-        elif op == '/':
+        elif op == "/":
             return (v * diff(u, x) - u * diff(v, x)) / (v * v)
-        elif op == '**' and isnumber(x.op):
-            return (v * u ** (v - 1) * diff(u, x))
-        elif op == '**':
-            return (v * u ** (v - 1) * diff(u, x) +
-                    u ** v * Expr('log')(u) * diff(v, x))
-        elif op == 'log':
+        elif op == "**" and isnumber(x.op):
+            return v * u ** (v - 1) * diff(u, x)
+        elif op == "**":
+            return v * u ** (v - 1) * diff(u, x) + u**v * Expr("log")(u) * diff(v, x)
+        elif op == "log":
             return diff(u, x) / u
         else:
             raise ValueError("Unknown op: {} in diff({}, {})".format(op, y, x))
@@ -1600,7 +1656,7 @@ def simp(x):
         return x
     args = list(map(simp, x.args))
     u, op, v = args[0], x.op, args[-1]
-    if op == '+':
+    if op == "+":
         if v == 0:
             return u
         if u == 0:
@@ -1609,10 +1665,10 @@ def simp(x):
             return 2 * u
         if u == -v or v == -u:
             return 0
-    elif op == '-' and len(args) == 1:
-        if u.op == '-' and len(u.args) == 1:
+    elif op == "-" and len(args) == 1:
+        if u.op == "-" and len(u.args) == 1:
             return u.args[0]  # --y ==> y
-    elif op == '-':
+    elif op == "-":
         if v == 0:
             return u
         if u == 0:
@@ -1621,7 +1677,7 @@ def simp(x):
             return 0
         if u == -v or v == -u:
             return 0
-    elif op == '*':
+    elif op == "*":
         if u == 0 or v == 0:
             return 0
         if u == 1:
@@ -1629,17 +1685,17 @@ def simp(x):
         if v == 1:
             return u
         if u == v:
-            return u ** 2
-    elif op == '/':
+            return u**2
+    elif op == "/":
         if u == 0:
             return 0
         if v == 0:
-            return Expr('Undefined')
+            return Expr("Undefined")
         if u == v:
             return 1
         if u == -v or v == -u:
             return 0
-    elif op == '**':
+    elif op == "**":
         if u == 0:
             return 0
         if v == 0:
@@ -1648,7 +1704,7 @@ def simp(x):
             return 1
         if v == 1:
             return u
-    elif op == 'log':
+    elif op == "log":
         if u == 1:
             return 0
     else:
