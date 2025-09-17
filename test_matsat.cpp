@@ -1,4 +1,6 @@
 // test_matsat.cpp
+// compiled with clang++ -std=c++17 -O2 -Wall -Wextra   test_matsat.cpp   $(python3 -m pybind11 --includes)   $(python3-config --embed --ldflags 2>/dev/null || python3-config --ldflags)   -o test_matsat
+
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
@@ -109,5 +111,4 @@ TEST_CASE("20 vars 91 clauses")
     auto res = run_sat(f, /*seed=*/42, /*max_try=*/20, /*max_itr=*/2000000);
     REQUIRE(res.has_value());
     REQUIRE(verifier(res.value(), parseCNF(f)));
-    
 }

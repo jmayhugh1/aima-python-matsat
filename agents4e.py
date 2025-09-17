@@ -920,9 +920,8 @@ class WumpusEnvironment(XYEnvironment):
 
     def __init__(self, agent_program, width=6, height=6, show=False):
         super().__init__(width, height)
+        self.show = show
         self.init_world(agent_program)
-        if show:
-           print(self.to_str())
 
     def init_world(self, program):
         """Spawn items in the world based on probabilities from the book"""
@@ -953,6 +952,9 @@ class WumpusEnvironment(XYEnvironment):
 
         "AGENT"
         self.add_thing(Explorer(program), (1, 1), True)
+        if self.show:
+            print("World initialized:")
+            print(self.to_str)
 
     def get_world(self, show_walls=True):
         """Return the items in the world"""
@@ -1064,6 +1066,17 @@ class WumpusEnvironment(XYEnvironment):
                     arrow_travel = agent.direction.move_forward(agent.location)
                 agent.has_arrow = False
 
+    def run(self, steps=1000):
+        """Run the Environment for given number of time steps."""
+        for step in range(steps):
+            if self.is_done():
+                return
+            self.step()
+            if self.show:
+                print("Step {}".format(step + 1))
+                print(self.to_str())
+                print()
+
     def in_danger(self, agent):
         """Check if Explorer is in danger (Pit or Wumpus), if he is, kill him"""
         for thing in self.list_things_at(agent.location):
@@ -1161,15 +1174,14 @@ class WumpusEnvironment(XYEnvironment):
     # TODO: Arrow needs to be implemented
 
 
-
-
 class WumpusTestEnvironment(WumpusEnvironment):
     def init_world(self, program):
         self.add_thing(Explorer(program), (1, 1), True)
         pass
-        
-    
+
+
 # ______________________________________________________________________________
+
 
 def compare_agents(EnvFactory, AgentFactories, n=10, steps=1000):
     """See how well each of several agents do in n instances of an environment.
