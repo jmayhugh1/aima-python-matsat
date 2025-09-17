@@ -2,6 +2,7 @@ from typing import *
 from utils4e import Expr, expr
 from logic4e import to_cnf, conjuncts, prop_symbols, dpll_satisfiable
 import numpy as np
+import cppimport
 
 # ---------- helpers: build instance matrices ----------
 
@@ -125,5 +126,11 @@ def mat_sat(
     )
 
 
-print(dpll_satisfiable(expr("A")))
-print(mat_sat(expr("A & ~A")))
+def mat_sat_cpp(formula : str):
+    if type(formula) != str:
+        formula = str(formula)
+    m = cppimport.imp("matsat")
+    print(m.mat_sat(formula))
+    return
+
+mat_sat_cpp('(A | B) & (~A | C) & (~B | ~C)') 
