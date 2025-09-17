@@ -8,7 +8,7 @@ functions.
 
 import sys
 from collections import deque
-
+from wumpus_types import WumpusPosition
 from utils import *
 
 
@@ -277,7 +277,8 @@ def best_first_graph_search(problem, f, display=False):
                 print(len(explored), "paths have been expanded and", len(frontier), "paths remain in the frontier")
             return node
         explored.add(node.state)
-        for child in node.expand(problem):
+        children = node.expand(problem)
+        for child in children:
             if child.state not in explored and child not in frontier:
                 frontier.append(child)
             elif child in frontier:
@@ -532,54 +533,37 @@ class PlanRoute(Problem):
         return possible_actions
 
     def result(self, state, action):
-        """ Given state and action, return a new state that is the result of the action.
-        Action is assumed to be a valid action in the state """
         x, y = state.get_location()
-        proposed_loc = list()
+        ori  = state.get_orientation()
 
-        # Move Forward
+        # make a fresh copy
+        new_state = WumpusPosition(x, y, ori)
+
         if action == 'Forward':
-            if state.get_orientation() == 'UP':
-                proposed_loc = [x, y + 1]
-            elif state.get_orientation() == 'DOWN':
-                proposed_loc = [x, y - 1]
-            elif state.get_orientation() == 'LEFT':
-                proposed_loc = [x - 1, y]
-            elif state.get_orientation() == 'RIGHT':
-                proposed_loc = [x + 1, y]
-            else:
-                raise Exception('InvalidOrientation')
+            dx, dy = 0, 0
+            if ori == 'UP':    dy = 1
+            elif ori == 'DOWN':dy = -1
+            elif ori == 'LEFT':dx = -1
+            elif ori == 'RIGHT':dx = 1
 
-        # Rotate counter-clockwise
+            nx, ny = x + dx, y + dy
+            # only move if inside bounds AND allowed
+            if 1 <= nx <= self.dimrow and 1 <= ny <= self.dimrow and [nx, ny] in self.allowed:
+                new_state.set_location(nx, ny)
+            # else: stay in place (no bump model here)
+
         elif action == 'TurnLeft':
-            if state.get_orientation() == 'UP':
-                state.set_orientation('LEFT')
-            elif state.get_orientation() == 'DOWN':
-                state.set_orientation('RIGHT')
-            elif state.get_orientation() == 'LEFT':
-                state.set_orientation('DOWN')
-            elif state.get_orientation() == 'RIGHT':
-                state.set_orientation('UP')
-            else:
-                raise Exception('InvalidOrientation')
+            rot = {'UP':'LEFT','LEFT':'DOWN','DOWN':'RIGHT','RIGHT':'UP'}
+            new_state.set_orientation(rot[ori])
 
-        # Rotate clockwise
         elif action == 'TurnRight':
-            if state.get_orientation() == 'UP':
-                state.set_orientation('RIGHT')
-            elif state.get_orientation() == 'DOWN':
-                state.set_orientation('LEFT')
-            elif state.get_orientation() == 'LEFT':
-                state.set_orientation('UP')
-            elif state.get_orientation() == 'RIGHT':
-                state.set_orientation('DOWN')
-            else:
-                raise Exception('InvalidOrientation')
+            rot = {'UP':'RIGHT','RIGHT':'DOWN','DOWN':'LEFT','LEFT':'UP'}
+            new_state.set_orientation(rot[ori])
 
-        if proposed_loc in self.allowed:
-            state.set_location(proposed_loc[0], [proposed_loc[1]])
+        else:
+            raise Exception('InvalidAction')
 
-        return state
+        return new_state
 
     def goal_test(self, state):
         """ Given a state, return True if state is a goal state or False, otherwise """

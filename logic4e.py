@@ -37,6 +37,7 @@ from collections import defaultdict
 
 from agents import Agent, Glitter, Bump, Stench, Breeze, Scream
 from search import astar_search, PlanRoute
+from wumpus_types import WumpusPosition
 from utils4e import (
     remove_all,
     unique,
@@ -615,21 +616,20 @@ def pl_resolution(KB, alpha):
     >>> pl_resolution(horn_clauses_KB, A)
     True
     """
-    clauses = KB.clauses + conjuncts(to_cnf(~alpha))
-    new = set()
+    clauses = set(KB.clauses) | set(conjuncts(to_cnf(~alpha)))
     while True:
-        n = len(clauses)
-        pairs = [(clauses[i], clauses[j]) for i in range(n) for j in range(i + 1, n)]
-        for ci, cj in pairs:
-            resolvents = pl_resolve(ci, cj)
-            if False in resolvents:
-                return True
-            new = new.union(set(resolvents))
-        if new.issubset(set(clauses)):
+        new = set()
+        clist = list(clauses)
+        n = len(clist)
+        for i in range(n):
+            for j in range(i + 1, n):
+                for r in pl_resolve(clist[i], clist[j]):
+                    if r is False:
+                        return True
+                    new.add(r)
+        if new.issubset(clauses):
             return False
-        for c in new:
-            if c not in clauses:
-                clauses.append(c)
+        clauses |= new
 
 
 def pl_resolve(ci, cj):
@@ -894,6 +894,13 @@ class WumpusKB(PropKB):
 
         for y in range(1, dimrow + 1):
             for x in range(1, dimrow + 1):
+                # OK at time 0
+                self.tell(
+                    equiv(
+                        ok_to_move(x, y, 0),
+                        ~pit(x, y) & (~wumpus(x, y) | ~wumpus_alive(0)),
+                    )
+                )
 
                 pits_in = list()
                 wumpus_in = list()
@@ -1044,7 +1051,7 @@ class WumpusKB(PropKB):
                 self.tell(
                     equiv(
                         ok_to_move(i, j, time),
-                        ~pit(i, j) & ~wumpus(i, j) & wumpus_alive(time),
+                        ~pit(i, j) & ~wumpus(i, j) | wumpus_alive(time),
                     )
                 )
 
@@ -1087,36 +1094,11 @@ class WumpusKB(PropKB):
         return pl_resolution(self, query)
 
 
-# ______________________________________________________________________________
+class WumpusSATKB(WumpusKB):
+    def ask_if_true(self, query):
+        formula = associate("&", self.clauses) & ~query
+        return dpll_satisfiable(formula) is False
 
-
-class WumpusPosition:
-    def __init__(self, x, y, orientation):
-        self.X = x
-        self.Y = y
-        self.orientation = orientation
-
-    def get_location(self):
-        return self.X, self.Y
-
-    def set_location(self, x, y):
-        self.X = x
-        self.Y = y
-
-    def get_orientation(self):
-        return self.orientation
-
-    def set_orientation(self, orientation):
-        self.orientation = orientation
-
-    def __eq__(self, other):
-        if (
-            other.get_location() == self.get_location()
-            and other.get_orientation() == self.get_orientation()
-        ):
-            return True
-        else:
-            return False
 
 
 # ______________________________________________________________________________
@@ -1131,7 +1113,7 @@ class HybridWumpusAgent(Agent):
         self.kb = kb_class(self.dimrow)
         self.t = 0
         self.plan = list()
-        self.current_position = WumpusPosition(1, 1, "UP")
+        self.current_position = WumpusPosition(1, 1, "EAST")
         super().__init__(self.execute)
 
     def execute(self, percept):
@@ -1170,21 +1152,17 @@ class HybridWumpusAgent(Agent):
             self.plan.append("Climb")
 
         if len(self.plan) == 0:
-            unvisited = list()
+            visited = set()
             for i in range(1, self.dimrow + 1):
                 for j in range(1, self.dimrow + 1):
-                    for k in range(self.t):
-                        if self.kb.ask_if_true(location(i, j, k)):
-                            unvisited.append([i, j])
-            unvisited_and_safe = list()
-            for u in unvisited:
-                for s in safe_points:
-                    if u not in unvisited_and_safe and s == u:
-                        unvisited_and_safe.append(u)
+                    if any(self.kb.ask_if_true(location(i, j, k)) for k in range(self.t + 1)):
+                        visited.add((i, j))
 
-            temp = self.plan_route(
-                self.current_position, unvisited_and_safe, safe_points
-            )
+            # Keep only safe points we haven't visited yet
+            safe_tuples = [tuple(s) for s in safe_points]          # convert [[i,j], ...] -> [(i,j), ...]
+            unvisited_and_safe = [[i, j] for (i, j) in safe_tuples if (i, j) not in visited]
+            goal = [1,1] if not unvisited_and_safe else unvisited_and_safe[0]
+            temp = self.plan_route(self.current_position, goal, safe_points)
             self.plan.extend(temp)
 
         if len(self.plan) == 0 and self.kb.ask_if_true(have_arrow(self.t)):

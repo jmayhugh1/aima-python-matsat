@@ -1457,163 +1457,163 @@ class WumpusKB(PropKB):
 # ______________________________________________________________________________
 
 
-class WumpusPosition:
-    def __init__(self, x, y, orientation):
-        self.X = x
-        self.Y = y
-        self.orientation = orientation
+# class WumpusPosition:
+#     def __init__(self, x, y, orientation):
+#         self.X = x
+#         self.Y = y
+#         self.orientation = orientation
 
-    def get_location(self):
-        return self.X, self.Y
+#     def get_location(self):
+#         return self.X, self.Y
 
-    def set_location(self, x, y):
-        self.X = x
-        self.Y = y
+#     def set_location(self, x, y):
+#         self.X = x
+#         self.Y = y
 
-    def get_orientation(self):
-        return self.orientation
+#     def get_orientation(self):
+#         return self.orientation
 
-    def set_orientation(self, orientation):
-        self.orientation = orientation
+#     def set_orientation(self, orientation):
+#         self.orientation = orientation
 
-    def __eq__(self, other):
-        if other.get_location() == self.get_location() and other.get_orientation() == self.get_orientation():
-            return True
-        else:
-            return False
+#     def __eq__(self, other):
+#         if other.get_location() == self.get_location() and other.get_orientation() == self.get_orientation():
+#             return True
+#         else:
+#             return False
 
 
 # ______________________________________________________________________________
 
 
-class HybridWumpusAgent(Agent):
-    """
-    [Figure 7.20]
-    An agent for the wumpus world that does logical inference.
-    """
+# class HybridWumpusAgent(Agent):
+#     """
+#     [Figure 7.20]
+#     An agent for the wumpus world that does logical inference.
+#     """
 
-    def __init__(self, dimentions):
-        self.dimrow = dimentions
-        self.kb = WumpusKB(self.dimrow)
-        self.t = 0
-        self.plan = list()
-        self.current_position = WumpusPosition(1, 1, 'UP')
-        super().__init__(self.execute)
+#     def __init__(self, dimentions):
+#         self.dimrow = dimentions
+#         self.kb = WumpusKB(self.dimrow)
+#         self.t = 0
+#         self.plan = list()
+#         self.current_position = WumpusPosition(1, 1, 'UP')
+#         super().__init__(self.execute)
 
-    def execute(self, percept):
-        self.kb.make_percept_sentence(percept, self.t)
-        self.kb.add_temporal_sentences(self.t)
+#     def execute(self, percept):
+#         self.kb.make_percept_sentence(percept, self.t)
+#         self.kb.add_temporal_sentences(self.t)
 
-        temp = list()
+#         temp = list()
 
-        for i in range(1, self.dimrow + 1):
-            for j in range(1, self.dimrow + 1):
-                if self.kb.ask_if_true(location(i, j, self.t)):
-                    temp.append(i)
-                    temp.append(j)
+#         for i in range(1, self.dimrow + 1):
+#             for j in range(1, self.dimrow + 1):
+#                 if self.kb.ask_if_true(location(i, j, self.t)):
+#                     temp.append(i)
+#                     temp.append(j)
 
-        if self.kb.ask_if_true(facing_north(self.t)):
-            self.current_position = WumpusPosition(temp[0], temp[1], 'UP')
-        elif self.kb.ask_if_true(facing_south(self.t)):
-            self.current_position = WumpusPosition(temp[0], temp[1], 'DOWN')
-        elif self.kb.ask_if_true(facing_west(self.t)):
-            self.current_position = WumpusPosition(temp[0], temp[1], 'LEFT')
-        elif self.kb.ask_if_true(facing_east(self.t)):
-            self.current_position = WumpusPosition(temp[0], temp[1], 'RIGHT')
+#         if self.kb.ask_if_true(facing_north(self.t)):
+#             self.current_position = WumpusPosition(temp[0], temp[1], 'UP')
+#         elif self.kb.ask_if_true(facing_south(self.t)):
+#             self.current_position = WumpusPosition(temp[0], temp[1], 'DOWN')
+#         elif self.kb.ask_if_true(facing_west(self.t)):
+#             self.current_position = WumpusPosition(temp[0], temp[1], 'LEFT')
+#         elif self.kb.ask_if_true(facing_east(self.t)):
+#             self.current_position = WumpusPosition(temp[0], temp[1], 'RIGHT')
 
-        safe_points = list()
-        for i in range(1, self.dimrow + 1):
-            for j in range(1, self.dimrow + 1):
-                if self.kb.ask_if_true(ok_to_move(i, j, self.t)):
-                    safe_points.append([i, j])
+#         safe_points = list()
+#         for i in range(1, self.dimrow + 1):
+#             for j in range(1, self.dimrow + 1):
+#                 if self.kb.ask_if_true(ok_to_move(i, j, self.t)):
+#                     safe_points.append([i, j])
 
-        if self.kb.ask_if_true(percept_glitter(self.t)):
-            goals = list()
-            goals.append([1, 1])
-            self.plan.append('Grab')
-            actions = self.plan_route(self.current_position, goals, safe_points)
-            self.plan.extend(actions)
-            self.plan.append('Climb')
+#         if self.kb.ask_if_true(percept_glitter(self.t)):
+#             goals = list()
+#             goals.append([1, 1])
+#             self.plan.append('Grab')
+#             actions = self.plan_route(self.current_position, goals, safe_points)
+#             self.plan.extend(actions)
+#             self.plan.append('Climb')
 
-        if len(self.plan) == 0:
-            unvisited = list()
-            for i in range(1, self.dimrow + 1):
-                for j in range(1, self.dimrow + 1):
-                    for k in range(self.t):
-                        if self.kb.ask_if_true(location(i, j, k)):
-                            unvisited.append([i, j])
-            unvisited_and_safe = list()
-            for u in unvisited:
-                for s in safe_points:
-                    if u not in unvisited_and_safe and s == u:
-                        unvisited_and_safe.append(u)
+#         if len(self.plan) == 0:
+#             unvisited = list()
+#             for i in range(1, self.dimrow + 1):
+#                 for j in range(1, self.dimrow + 1):
+#                     for k in range(self.t):
+#                         if self.kb.ask_if_true(location(i, j, k)):
+#                             unvisited.append([i, j])
+#             unvisited_and_safe = list()
+#             for u in unvisited:
+#                 for s in safe_points:
+#                     if u not in unvisited_and_safe and s == u:
+#                         unvisited_and_safe.append(u)
 
-            temp = self.plan_route(self.current_position, unvisited_and_safe, safe_points)
-            self.plan.extend(temp)
+#             temp = self.plan_route(self.current_position, unvisited_and_safe, safe_points)
+#             self.plan.extend(temp)
 
-        if len(self.plan) == 0 and self.kb.ask_if_true(have_arrow(self.t)):
-            possible_wumpus = list()
-            for i in range(1, self.dimrow + 1):
-                for j in range(1, self.dimrow + 1):
-                    if not self.kb.ask_if_true(wumpus(i, j)):
-                        possible_wumpus.append([i, j])
+#         if len(self.plan) == 0 and self.kb.ask_if_true(have_arrow(self.t)):
+#             possible_wumpus = list()
+#             for i in range(1, self.dimrow + 1):
+#                 for j in range(1, self.dimrow + 1):
+#                     if not self.kb.ask_if_true(wumpus(i, j)):
+#                         possible_wumpus.append([i, j])
 
-            temp = self.plan_shot(self.current_position, possible_wumpus, safe_points)
-            self.plan.extend(temp)
+#             temp = self.plan_shot(self.current_position, possible_wumpus, safe_points)
+#             self.plan.extend(temp)
 
-        if len(self.plan) == 0:
-            not_unsafe = list()
-            for i in range(1, self.dimrow + 1):
-                for j in range(1, self.dimrow + 1):
-                    if not self.kb.ask_if_true(ok_to_move(i, j, self.t)):
-                        not_unsafe.append([i, j])
-            temp = self.plan_route(self.current_position, not_unsafe, safe_points)
-            self.plan.extend(temp)
+#         if len(self.plan) == 0:
+#             not_unsafe = list()
+#             for i in range(1, self.dimrow + 1):
+#                 for j in range(1, self.dimrow + 1):
+#                     if not self.kb.ask_if_true(ok_to_move(i, j, self.t)):
+#                         not_unsafe.append([i, j])
+#             temp = self.plan_route(self.current_position, not_unsafe, safe_points)
+#             self.plan.extend(temp)
 
-        if len(self.plan) == 0:
-            start = list()
-            start.append([1, 1])
-            temp = self.plan_route(self.current_position, start, safe_points)
-            self.plan.extend(temp)
-            self.plan.append('Climb')
+#         if len(self.plan) == 0:
+#             start = list()
+#             start.append([1, 1])
+#             temp = self.plan_route(self.current_position, start, safe_points)
+#             self.plan.extend(temp)
+#             self.plan.append('Climb')
 
-        action = self.plan[0]
-        self.plan = self.plan[1:]
-        self.kb.make_action_sentence(action, self.t)
-        self.t += 1
+#         action = self.plan[0]
+#         self.plan = self.plan[1:]
+#         self.kb.make_action_sentence(action, self.t)
+#         self.t += 1
 
-        return action
+#         return action
 
-    def plan_route(self, current, goals, allowed):
-        problem = PlanRoute(current, goals, allowed, self.dimrow)
-        return astar_search(problem).solution()
+#     def plan_route(self, current, goals, allowed):
+#         problem = PlanRoute(current, goals, allowed, self.dimrow)
+#         return astar_search(problem).solution()
 
-    def plan_shot(self, current, goals, allowed):
-        shooting_positions = set()
+#     def plan_shot(self, current, goals, allowed):
+#         shooting_positions = set()
 
-        for loc in goals:
-            x = loc[0]
-            y = loc[1]
-            for i in range(1, self.dimrow + 1):
-                if i < x:
-                    shooting_positions.add(WumpusPosition(i, y, 'EAST'))
-                if i > x:
-                    shooting_positions.add(WumpusPosition(i, y, 'WEST'))
-                if i < y:
-                    shooting_positions.add(WumpusPosition(x, i, 'NORTH'))
-                if i > y:
-                    shooting_positions.add(WumpusPosition(x, i, 'SOUTH'))
+#         for loc in goals:
+#             x = loc[0]
+#             y = loc[1]
+#             for i in range(1, self.dimrow + 1):
+#                 if i < x:
+#                     shooting_positions.add(WumpusPosition(i, y, 'EAST'))
+#                 if i > x:
+#                     shooting_positions.add(WumpusPosition(i, y, 'WEST'))
+#                 if i < y:
+#                     shooting_positions.add(WumpusPosition(x, i, 'NORTH'))
+#                 if i > y:
+#                     shooting_positions.add(WumpusPosition(x, i, 'SOUTH'))
 
-        # Can't have a shooting position from any of the rooms the Wumpus could reside
-        orientations = ['EAST', 'WEST', 'NORTH', 'SOUTH']
-        for loc in goals:
-            for orientation in orientations:
-                shooting_positions.remove(WumpusPosition(loc[0], loc[1], orientation))
+#         # Can't have a shooting position from any of the rooms the Wumpus could reside
+#         orientations = ['EAST', 'WEST', 'NORTH', 'SOUTH']
+#         for loc in goals:
+#             for orientation in orientations:
+#                 shooting_positions.remove(WumpusPosition(loc[0], loc[1], orientation))
 
-        actions = list()
-        actions.extend(self.plan_route(current, shooting_positions, allowed))
-        actions.append('Shoot')
-        return actions
+#         actions = list()
+#         actions.extend(self.plan_route(current, shooting_positions, allowed))
+#         actions.append('Shoot')
+#         return actions
 
 
 # ______________________________________________________________________________

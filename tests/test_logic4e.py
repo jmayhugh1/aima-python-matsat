@@ -90,8 +90,21 @@ def test_wumpus_kb():
 
     # Statement: There is a pit in either [2,2] or [3,1].
     assert wumpus_kb.ask(P22 | P31) == {}
-    
-    
+
+
+def test_basic_true_facts():
+    kb = WumpusSATKB(2)
+    assert kb.ask_if_true(~pit(1, 1)) is True
+    assert kb.ask_if_true(~wumpus(1, 1)) is True
+    assert kb.ask_if_true(location(1, 1, 0)) is True
+    assert kb.ask_if_true(facing_east(0)) is True
+
+
+def test_basic_non_entailed():
+    kb = WumpusSATKB(2)
+    assert kb.ask_if_true(pit(2, 2)) is False
+    assert kb.ask_if_true(wumpus(2, 2)) is False
+    assert kb.ask_if_true(facing_north(0)) is False
 
 
 def test_is_definite_clause():
@@ -311,6 +324,92 @@ def test_pl_resolution():
     assert pl_resolution(horn_clauses_KB, B)
     assert not pl_resolution(horn_clauses_KB, P)
     assert not pl_resolution(definite_clauses_KB, P)
+
+
+def test_more_pl_resolution():
+    # Helpers for fresh symbols
+    X1, Y1, Z1 = expr("X1"), expr("Y1"), expr("Z1")
+    R1, G1, R2, G2 = expr("R1"), expr("G1"), expr("R2"), expr("G2")
+
+    # 1) XOR + implication: (A ⊕ B) ∧ B ∧ (B ⇒ C) ⊨ ~A and ⊨ C
+    kb1 = PropKB()
+    kb1.tell(A | B)  # at least one
+    kb1.tell(~A | ~B)  # at most one   => XOR
+    kb1.tell(B)
+    kb1.tell(B | "==>" | C)
+    assert pl_resolution(kb1, ~A)
+    assert pl_resolution(kb1, C)
+    assert not pl_resolution(kb1, A)
+
+    # 2) Exactly-one-of {A,B,C} with routed consequences
+    #    (A ⇒ X1), (B ⇒ Y1), (C ⇒ Z1) ⇒ ⊨ (X1 ∨ Y1 ∨ Z1), but not any single one
+    kb2 = PropKB()
+    kb2.tell(A | B | C)  # at least one
+    kb2.tell(~A | ~B)
+    kb2.tell(~A | ~C)
+    kb2.tell(~B | ~C)  # pairwise at-most-one
+    kb2.tell(A | "==>" | X1)
+    kb2.tell(B | "==>" | Y1)
+    kb2.tell(C | "==>" | Z1)
+    assert pl_resolution(kb2, X1 | Y1 | Z1)
+    assert not pl_resolution(kb2, X1)
+    assert not pl_resolution(kb2, Y1)
+    assert not pl_resolution(kb2, Z1)
+
+    # 3) Simple 2-coloring on a 2-node graph with an edge:
+    kb3 = PropKB()
+    # node 1 exactly one of {R1,G1}
+    kb3.tell(R1 | G1)
+    kb3.tell(~R1 | ~G1)
+    # node 2 exactly one of {R2,G2}
+    kb3.tell(R2 | G2)
+    kb3.tell(~R2 | ~G2)
+    # edge constraint: different colors
+    kb3.tell(~R1 | ~R2)
+    kb3.tell(~G1 | ~G2)
+    kb3.tell(R1)
+    assert pl_resolution(kb3, G2)
+    assert pl_resolution(kb3, ~R2)
+    assert not pl_resolution(kb3, R2)
+
+    # 4) “At-least-one triggers” to a single consequence:
+    #    (A ∨ B ∨ C) ∧ (¬A ∨ D) ∧ (¬B ∨ D) ∧ (¬C ∨ D) ⊨ D
+    kb4 = PropKB()
+    kb4.tell(A | B | C)
+    kb4.tell(~A | D)
+    kb4.tell(~B | D)
+    kb4.tell(~C | D)
+    assert pl_resolution(kb4, D)
+
+    # 5) Equivalence chain with negations:
+    #    (A ⇔ ¬B) ∧ (B ⇔ ¬C) ∧ A ⊨ C and ⊨ ¬B (but not B)
+    kb5 = PropKB()
+    kb5.tell(A | "<=>" | ~B)
+    kb5.tell(B | "<=>" | ~C)
+    kb5.tell(A)
+    assert pl_resolution(kb5, C)
+    assert pl_resolution(kb5, ~B)
+    assert not pl_resolution(kb5, B)
+
+    # 6) Longer implication chain: A ⇒ B ⇒ C ⇒ D ⇒ E with A fact ⊨ E
+    kb6 = PropKB()
+    kb6.tell(A)
+    kb6.tell(A | "==>" | B)
+    kb6.tell(B | "==>" | C)
+    kb6.tell(C | "==>" | D)
+    kb6.tell(D | "==>" | E)
+    assert pl_resolution(kb6, E)
+
+    kb7 = PropKB()
+    kb7.tell(A)
+    kb7.tell(~A)
+    assert pl_resolution(kb7, Z1)
+
+    kb9 = PropKB()
+    kb9.tell(A | B | C)
+    kb9.tell(~A | D)
+    kb9.tell(~B | E)
+    assert not pl_resolution(kb9, D)
 
 
 def test_standardize_variables():

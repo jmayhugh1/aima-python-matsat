@@ -775,6 +775,8 @@ class PriorityQueue:
         except ValueError:
             raise KeyError(str(key) + " is not in the priority queue")
         heapq.heapify(self.heap)
+    def __str__(self):
+        return "PriorityQueue({})".format([item for _, item in self.heap])
 
 
 # ______________________________________________________________________________
