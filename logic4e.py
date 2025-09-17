@@ -961,13 +961,19 @@ class WumpusKB(PropKB):
         self.tell(~facing_west(0))
 
     def make_action_sentence(self, action, time):
-        actions = [move_forward(time), shoot(time), turn_left(time), turn_right(time)]
+        # normalize to a string name if possible
+        name = action if isinstance(action, str) else getattr(action, "op", None)
 
-        for a in actions:
-            if action is a:
-                self.tell(action)
-            else:
-                self.tell(~a)
+        action_map = {
+            "Forward": move_forward(time),
+            "Shoot": shoot(time),
+            "TurnLeft": turn_left(time),
+            "TurnRight": turn_right(time),
+        }
+
+        # default: if not one of the 4, assert all are False
+        for key, sym in action_map.items():
+            self.tell(sym if name == key else ~sym)
 
     def make_percept_sentence(self, percept, time):
         # Glitter, Bump, Stench, Breeze, Scream
@@ -1012,6 +1018,7 @@ class WumpusKB(PropKB):
         # current location rules
         for i in range(1, self.dimrow + 1):
             for j in range(1, self.dimrow + 1):
+                # percept relations
                 self.tell(
                     implies(
                         location(i, j, time), equiv(percept_breeze(time), breeze(i, j))
@@ -1023,35 +1030,49 @@ class WumpusKB(PropKB):
                     )
                 )
 
-                s = list()
+                t = time - 1
 
-                s.append(
-                    equiv(
-                        location(i, j, time),
-                        location(i, j, time) & ~move_forward(time) | percept_bump(time),
+                # Stay if we didn't move or if we bumped
+                stay = location(i, j, t) & (~move_forward(t) | percept_bump(time))
+
+                # Enter (i,j) from neighbors if forward succeeded (no bump)
+                moves = []
+                if i > 1:  # from west, facing east
+                    moves.append(
+                        location(i - 1, j, t)
+                        & facing_east(t)
+                        & move_forward(t)
+                        & ~percept_bump(time)
                     )
-                )
+                if i < self.dimrow:  # from east, facing west
+                    moves.append(
+                        location(i + 1, j, t)
+                        & facing_west(t)
+                        & move_forward(t)
+                        & ~percept_bump(time)
+                    )
+                if j > 1:  # from south, facing north
+                    moves.append(
+                        location(i, j - 1, t)
+                        & facing_north(t)
+                        & move_forward(t)
+                        & ~percept_bump(time)
+                    )
+                if j < self.dimrow:  # from north, facing south
+                    moves.append(
+                        location(i, j + 1, t)
+                        & facing_south(t)
+                        & move_forward(t)
+                        & ~percept_bump(time)
+                    )
 
-                if i != 1:
-                    s.append(location(i - 1, j, t) & facing_east(t) & move_forward(t))
+                self.tell(equiv(location(i, j, time), associate("|", [stay] + moves)))
 
-                if i != self.dimrow:
-                    s.append(location(i + 1, j, t) & facing_west(t) & move_forward(t))
-
-                if j != 1:
-                    s.append(location(i, j - 1, t) & facing_north(t) & move_forward(t))
-
-                if j != self.dimrow:
-                    s.append(location(i, j + 1, t) & facing_south(t) & move_forward(t))
-
-                # add sentence about location i,j
-                self.tell(new_disjunction(s))
-
-                # add sentence about safety of location i,j
+                # Safety rule: keep the same semantics as time 0
                 self.tell(
                     equiv(
                         ok_to_move(i, j, time),
-                        ~pit(i, j) & ~wumpus(i, j) | wumpus_alive(time),
+                        ~pit(i, j) & (~wumpus(i, j) | ~wumpus_alive(time)),
                     )
                 )
 
@@ -1098,7 +1119,6 @@ class WumpusSATKB(WumpusKB):
     def ask_if_true(self, query):
         formula = associate("&", self.clauses) & ~query
         return dpll_satisfiable(formula) is False
-
 
 
 # ______________________________________________________________________________
@@ -1155,13 +1175,20 @@ class HybridWumpusAgent(Agent):
             visited = set()
             for i in range(1, self.dimrow + 1):
                 for j in range(1, self.dimrow + 1):
-                    if any(self.kb.ask_if_true(location(i, j, k)) for k in range(self.t + 1)):
+                    if any(
+                        self.kb.ask_if_true(location(i, j, k))
+                        for k in range(self.t + 1)
+                    ):
                         visited.add((i, j))
 
             # Keep only safe points we haven't visited yet
-            safe_tuples = [tuple(s) for s in safe_points]          # convert [[i,j], ...] -> [(i,j), ...]
-            unvisited_and_safe = [[i, j] for (i, j) in safe_tuples if (i, j) not in visited]
-            goal = [1,1] if not unvisited_and_safe else unvisited_and_safe[0]
+            safe_tuples = [
+                tuple(s) for s in safe_points
+            ]  # convert [[i,j], ...] -> [(i,j), ...]
+            unvisited_and_safe = [
+                [i, j] for (i, j) in safe_tuples if (i, j) not in visited
+            ]
+            goal = [1, 1] if not unvisited_and_safe else unvisited_and_safe[0]
             temp = self.plan_route(self.current_position, goal, safe_points)
             self.plan.extend(temp)
 
