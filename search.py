@@ -504,7 +504,33 @@ class PlanRoute(Problem):
         """ Define goal state and initialize a problem """
         super().__init__(initial, goal)
         self.dimrow = dimrow
-        self.goal = goal
+        # Normalize goals to a list of (x, y) tuples
+        def normalize_goals(g):
+            # Single coordinate like [x, y] or (x, y)
+            if (
+                isinstance(g, (list, tuple))
+                and len(g) == 2
+                and not any(isinstance(el, (list, tuple)) for el in g)
+            ):
+                return [tuple(g)]
+            # Iterable of goals: can be [ [x,y], ... ] or set of WumpusPosition
+            goals_list = []
+            try:
+                iterator = iter(g)
+            except TypeError:
+                # Fallback: treat as single goal
+                return [tuple(g)]
+            for item in iterator:
+                if hasattr(item, 'get_location'):
+                    goals_list.append(tuple(item.get_location()))
+                elif isinstance(item, (list, tuple)) and len(item) == 2:
+                    goals_list.append(tuple(item))
+                else:
+                    # Ignore malformed entries
+                    continue
+            return goals_list if goals_list else [tuple(g)]
+
+        self.goals = normalize_goals(goal)
         self.allowed = allowed
 
     def actions(self, state):
@@ -567,17 +593,15 @@ class PlanRoute(Problem):
 
     def goal_test(self, state):
         """ Given a state, return True if state is a goal state or False, otherwise """
-
-        return state.get_location() == tuple(self.goal)
+        return state.get_location() in set(self.goals)
 
     def h(self, node):
         """ Return the heuristic value for a given state."""
 
         # Manhattan Heuristic Function
         x1, y1 = node.state.get_location()
-        x2, y2 = self.goal
-
-        return abs(x2 - x1) + abs(y2 - y1)
+        # If multiple goals, use the minimum Manhattan distance
+        return min(abs(x2 - x1) + abs(y2 - y1) for (x2, y2) in self.goals)
 
 
 # ______________________________________________________________________________

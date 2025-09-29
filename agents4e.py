@@ -1176,7 +1176,21 @@ class WumpusEnvironment(XYEnvironment):
 
 class WumpusTestEnvironment(WumpusEnvironment):
     def init_world(self, program):
-        self.add_thing(Explorer(program), (1, 1), True)
+        # Add perimeter walls to define the interior grid bounds
+        self.add_walls()
+
+        # Place a Pit in the top-right interior corner and Breezes around it
+        pit_x, pit_y = (self.width - 2, self.height - 2)
+        self.add_thing(Pit(), (pit_x, pit_y), True)
+        self.add_thing(Breeze(), (pit_x - 1, pit_y), True)
+        self.add_thing(Breeze(), (pit_x + 1, pit_y), True)
+        self.add_thing(Breeze(), (pit_x, pit_y - 1), True)
+        self.add_thing(Breeze(), (pit_x, pit_y + 1), True)
+
+        # Add the Explorer at (1,1) facing north
+        explorer = Explorer(program)
+        explorer.direction = Direction("up")
+        self.add_thing(explorer, (1, 1), True)
         pass
 
 

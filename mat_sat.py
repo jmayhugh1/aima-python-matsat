@@ -126,11 +126,14 @@ def mat_sat(
     )
 
 
-def mat_sat_cpp(formula : str):
+def mat_sat_cpp(formula : Expr) -> dict[Expr, bool] | None:
+    if type(formula) == Expr:
+        formula = to_cnf(formula)
     if type(formula) != str:
         formula = str(formula)
+        if len(formula) >= 2 and formula[0] == '(' and formula[-1] == ')':
+            formula = formula[1:-1]
     m = cppimport.imp("matsat")
-    print(m.mat_sat(formula))
-    return
+    assignment = m.mat_sat(formula, max_itr = 100)
+    return {expr(key) : val for key, val in assignment.items()} if assignment else None
 
-mat_sat_cpp('(A | B) & (~A | C) & (~B | ~C)') 
