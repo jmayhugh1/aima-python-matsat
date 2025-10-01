@@ -366,6 +366,7 @@ static int unsat_count(const Mat &A, const Vec &Q2_ones, const Vec &u_bin)
 
 static std::optional<Assignment> mat_sat_cnf(const CNF &cnf, const MatSatParams &P = {})
 {
+    const float epsilon = 1e-3;
     auto q = build_Q1_Q2(cnf);
     const auto &Q1 = q.Q1;
     const auto &Q2 = q.Q2;
@@ -453,6 +454,8 @@ static std::optional<Assignment> mat_sat_cnf(const CNF &cnf, const MatSatParams 
                     return asg;
                 }
             }
+            if (err <= epsilon)
+                break;
         }
         // randomized restart / noise mixing
         for (size_t i = 0; i < n; ++i)
@@ -462,7 +465,7 @@ static std::optional<Assignment> mat_sat_cnf(const CNF &cnf, const MatSatParams 
         }
     }
 
-    if (best_err == 0)
+    if (best_err <= epsilon)
     {
         Assignment asg;
         for (size_t j = 0; j < n; ++j)

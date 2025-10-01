@@ -134,6 +134,6 @@ def mat_sat_cpp(formula : Expr) -> dict[Expr, bool] | None:
         if len(formula) >= 2 and formula[0] == '(' and formula[-1] == ')':
             formula = formula[1:-1]
     m = cppimport.imp("matsat")
-    assignment = m.mat_sat(formula, max_itr = 100)
+    assignment = m.mat_sat(formula, max_itr = 2000)
     return {expr(key) : val for key, val in assignment.items()} if assignment else None
 
