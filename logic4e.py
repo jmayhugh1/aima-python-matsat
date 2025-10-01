@@ -93,17 +93,18 @@ class PropKB(KB):
     """A KB for propositional logic. Inefficient, with no indexing."""
 
     def __init__(self, sentence=None):
-        self.clauses = []
+        self.clauses = set()  # Use set to prevent duplicates
         if sentence:
             self.tell(sentence)
 
     def tell(self, sentence):
         """Add the sentence's clauses to the KB."""
-        self.clauses.extend(conjuncts(to_cnf(sentence)))
+        new_clauses = conjuncts(to_cnf(sentence))
+        self.clauses.update(new_clauses)  # set.update() adds unique clauses only
 
     def ask_generator(self, query):
         """Yield the empty substitution {} if KB entails query; else no results."""
-        if tt_entails(Expr("&", *self.clauses), query):
+        if tt_entails(Expr("&", *list(self.clauses)), query):
             yield {}
 
     def ask_if_true(self, query):
@@ -114,9 +115,8 @@ class PropKB(KB):
 
     def retract(self, sentence):
         """Remove the sentence's clauses from the KB."""
-        for c in conjuncts(to_cnf(sentence)):
-            if c in self.clauses:
-                self.clauses.remove(c)
+        clauses_to_remove = conjuncts(to_cnf(sentence))
+        self.clauses.difference_update(clauses_to_remove)
 
 
 def KB_AgentProgram(KB):
@@ -656,15 +656,15 @@ class PropDefiniteKB(PropKB):
     def tell(self, sentence):
         """Add a definite clause to this KB."""
         assert is_definite_clause(sentence), "Must be definite clause"
-        self.clauses.append(sentence)
+        self.clauses.add(sentence)
 
     def ask_generator(self, query):
         """Yield the empty substitution if KB implies query; else nothing."""
-        if pl_fc_entails(self.clauses, query):
+        if pl_fc_entails(list(self.clauses), query):
             yield {}
 
     def retract(self, sentence):
-        self.clauses.remove(sentence)
+        self.clauses.discard(sentence)
 
     def clauses_with_premise(self, p):
         """Return a list of the clauses in KB that have p in their premise.
@@ -1118,8 +1118,16 @@ class WumpusKB(PropKB):
 
 class WumpusSATKB(WumpusKB):
     def ask_if_true(self, query):
-        formula = associate("&", self.clauses) & ~query
-        return dpll_satisfiable(formula) is False
+        if (
+            query == percept_glitter(3)
+            or query == percept_glitter(2)
+            or query == percept_glitter(1)
+        ):
+            print("query", query)
+        formula = associate("&", list(self.clauses)) & ~query
+        result = dpll_satisfiable(formula)
+        print("result of asking if true", query, result)
+        return result is None
 
 
 # ______________________________________________________________________________
@@ -1179,6 +1187,7 @@ class HybridWumpusAgent(Agent):
         if self.kb.ask_if_true(percept_glitter(self.t)):
             goals = list()
             goals.append([1, 1])
+            print("the kb is", self.kb.clauses)
             self.plan.append("Grab")
             actions = self.plan_route(self.current_position, goals, safe_points)
             self.plan.extend(actions)
@@ -1451,14 +1460,14 @@ class FolKB(KB):
     """
 
     def __init__(self, initial_clauses=None):
-        self.clauses = []  # inefficient: no indexing
+        self.clauses = set()  # Use set to prevent duplicates
         if initial_clauses:
             for clause in initial_clauses:
                 self.tell(clause)
 
     def tell(self, sentence):
         if is_definite_clause(sentence):
-            self.clauses.append(sentence)
+            self.clauses.add(sentence)
         else:
             raise Exception("Not a definite clause: {}".format(sentence))
 

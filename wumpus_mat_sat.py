@@ -8,7 +8,7 @@ class WumpusKBMatSat(WumpusKB):
     """same as the original wumpusKB but checks for entailment using MatSat"""
 
     def ask_if_true(self, query):
-        kb_expr: Expr = Expr("&", *self.clauses)
+        kb_expr: Expr = Expr("&", *list(self.clauses))
         return mat_sat_cpp(kb_expr & ~query) is None
 
 
