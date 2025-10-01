@@ -50,11 +50,11 @@ class Thing:
     .__name__  slot (used for output only)."""
 
     def __repr__(self):
-        return '<{}>'.format(getattr(self, '__name__', self.__class__.__name__))
+        return "<{}>".format(getattr(self, "__name__", self.__class__.__name__))
 
     def is_alive(self):
         """Things that are 'alive' should return true."""
-        return hasattr(self, 'alive') and self.alive
+        return hasattr(self, "alive") and self.alive
 
     def show_state(self):
         """Display the agent's internal state. Subclasses should override."""
@@ -67,9 +67,9 @@ class Thing:
 
 
 class Agent(Thing):
-    """An Agent is a subclass of Thing with one required instance attribute 
+    """An Agent is a subclass of Thing with one required instance attribute
     (aka slot), .program, which should hold a function that takes one argument,
-    the percept, and returns an action. (What counts as a percept or action 
+    the percept, and returns an action. (What counts as a percept or action
     will depend on the specific environment in which the agent exists.)
     Note that 'program' is a slot, not a method. If it were a method, then the
     program could 'cheat' and look at aspects of the agent. It's not supposed
@@ -85,10 +85,14 @@ class Agent(Thing):
         self.holding = []
         self.performance = 0
         if program is None or not isinstance(program, collections.abc.Callable):
-            print("Can't find a valid program for {}, falling back to default.".format(self.__class__.__name__))
+            print(
+                "Can't find a valid program for {}, falling back to default.".format(
+                    self.__class__.__name__
+                )
+            )
 
             def program(percept):
-                return eval(input('Percept={}; action? '.format(percept)))
+                return eval(input("Percept={}; action? ".format(percept)))
 
         self.program = program
 
@@ -105,7 +109,7 @@ def TraceAgent(agent):
 
     def new_program(percept):
         action = old_program(percept)
-        print('{} perceives {} and does {}'.format(agent, percept, action))
+        print("{} perceives {} and does {}".format(agent, percept, action))
         return action
 
     agent.program = new_program
@@ -203,7 +207,7 @@ def RandomVacuumAgent():
     >>> environment.status == {(1,0):'Clean' , (0,0) : 'Clean'}
     True
     """
-    return Agent(RandomAgentProgram(['Right', 'Left', 'Suck', 'NoOp']))
+    return Agent(RandomAgentProgram(["Right", "Left", "Suck", "NoOp"]))
 
 
 def TableDrivenVacuumAgent():
@@ -215,16 +219,18 @@ def TableDrivenVacuumAgent():
     >>> environment.status == {(1,0):'Clean' , (0,0) : 'Clean'}
     True
     """
-    table = {((loc_A, 'Clean'),): 'Right',
-             ((loc_A, 'Dirty'),): 'Suck',
-             ((loc_B, 'Clean'),): 'Left',
-             ((loc_B, 'Dirty'),): 'Suck',
-             ((loc_A, 'Dirty'), (loc_A, 'Clean')): 'Right',
-             ((loc_A, 'Clean'), (loc_B, 'Dirty')): 'Suck',
-             ((loc_B, 'Clean'), (loc_A, 'Dirty')): 'Suck',
-             ((loc_B, 'Dirty'), (loc_B, 'Clean')): 'Left',
-             ((loc_A, 'Dirty'), (loc_A, 'Clean'), (loc_B, 'Dirty')): 'Suck',
-             ((loc_B, 'Dirty'), (loc_B, 'Clean'), (loc_A, 'Dirty')): 'Suck'}
+    table = {
+        ((loc_A, "Clean"),): "Right",
+        ((loc_A, "Dirty"),): "Suck",
+        ((loc_B, "Clean"),): "Left",
+        ((loc_B, "Dirty"),): "Suck",
+        ((loc_A, "Dirty"), (loc_A, "Clean")): "Right",
+        ((loc_A, "Clean"), (loc_B, "Dirty")): "Suck",
+        ((loc_B, "Clean"), (loc_A, "Dirty")): "Suck",
+        ((loc_B, "Dirty"), (loc_B, "Clean")): "Left",
+        ((loc_A, "Dirty"), (loc_A, "Clean"), (loc_B, "Dirty")): "Suck",
+        ((loc_B, "Dirty"), (loc_B, "Clean"), (loc_A, "Dirty")): "Suck",
+    }
     return Agent(TableDrivenAgentProgram(table))
 
 
@@ -242,12 +248,12 @@ def ReflexVacuumAgent():
 
     def program(percept):
         location, status = percept
-        if status == 'Dirty':
-            return 'Suck'
+        if status == "Dirty":
+            return "Suck"
         elif location == loc_A:
-            return 'Right'
+            return "Right"
         elif location == loc_B:
-            return 'Left'
+            return "Left"
 
     return Agent(program)
 
@@ -267,14 +273,14 @@ def ModelBasedVacuumAgent():
         """Same as ReflexVacuumAgent, except if everything is clean, do NoOp."""
         location, status = percept
         model[location] = status  # Update the model here
-        if model[loc_A] == model[loc_B] == 'Clean':
-            return 'NoOp'
-        elif status == 'Dirty':
-            return 'Suck'
+        if model[loc_A] == model[loc_B] == "Clean":
+            return "NoOp"
+        elif status == "Dirty":
+            return "Suck"
         elif location == loc_A:
-            return 'Right'
+            return "Right"
         elif location == loc_B:
-            return 'Left'
+            return "Left"
 
     return Agent(program)
 
@@ -332,7 +338,7 @@ class Environment:
                     actions.append(agent.program(self.percept(agent)))
                 else:
                     actions.append("")
-            for (agent, action) in zip(self.agents, actions):
+            for agent, action in zip(self.agents, actions):
                 self.execute_action(agent, action)
             self.exogenous_change()
 
@@ -346,10 +352,17 @@ class Environment:
     def list_things_at(self, location, tclass=Thing):
         """Return all things exactly at a given location."""
         if isinstance(location, numbers.Number):
-            return [thing for thing in self.things
-                    if thing.location == location and isinstance(thing, tclass)]
-        return [thing for thing in self.things
-                if all(x == y for x, y in zip(thing.location, location)) and isinstance(thing, tclass)]
+            return [
+                thing
+                for thing in self.things
+                if thing.location == location and isinstance(thing, tclass)
+            ]
+        return [
+            thing
+            for thing in self.things
+            if all(x == y for x, y in zip(thing.location, location))
+            and isinstance(thing, tclass)
+        ]
 
     def some_things_at(self, location, tclass=Thing):
         """Return true if at least one of the things at location
@@ -365,7 +378,9 @@ class Environment:
         if thing in self.things:
             print("Can't add the same thing twice")
         else:
-            thing.location = location if location is not None else self.default_location(thing)
+            thing.location = (
+                location if location is not None else self.default_location(thing)
+            )
             self.things.append(thing)
             if isinstance(thing, Agent):
                 thing.performance = 0
@@ -379,19 +394,23 @@ class Environment:
             print(e)
             print("  in Environment delete_thing")
             print("  Thing to be removed: {} at {}".format(thing, thing.location))
-            print("  from list: {}".format([(thing, thing.location) for thing in self.things]))
+            print(
+                "  from list: {}".format(
+                    [(thing, thing.location) for thing in self.things]
+                )
+            )
         if thing in self.agents:
             self.agents.remove(thing)
 
 
 class Direction:
     """A direction class for agents that want to move in a 2D plane
-        Usage:
-            d = Direction("down")
-            To change directions:
-            d = d + "right" or d = d + Direction.R #Both do the same thing
-            Note that the argument to __add__ must be a string and not a Direction object.
-            Also, it (the argument) can only be right or left."""
+    Usage:
+        d = Direction("down")
+        To change directions:
+        d = d + "right" or d = d + Direction.R #Both do the same thing
+        Note that the argument to __add__ must be a string and not a Direction object.
+        Also, it (the argument) can only be right or left."""
 
     R = "right"
     L = "left"
@@ -444,7 +463,7 @@ class Direction:
         >>> d = Direction('up')
         >>> l1 = d.move_forward((0, 0))
         >>> l1
-        (0, -1)
+        (0, 1)
         >>> d = Direction(Direction.R)
         >>> l1 = d.move_forward((0, 0))
         >>> l1
@@ -458,9 +477,11 @@ class Direction:
         elif self.direction == self.L:
             return iclass((x - 1, y))
         elif self.direction == self.U:
-            return iclass((x, y - 1))
+            return iclass((x, y + 1))  # Fixed: UP should increase y to match search.py
         elif self.direction == self.D:
-            return iclass((x, y + 1))
+            return iclass(
+                (x, y - 1)
+            )  # Fixed: DOWN should decrease y to match search.py
 
 
 class XYEnvironment(Environment):
@@ -489,9 +510,11 @@ class XYEnvironment(Environment):
         if radius is None:
             radius = self.perceptible_distance
         radius2 = radius * radius
-        return [(thing, radius2 - distance_squared(location, thing.location))
-                for thing in self.things if distance_squared(
-                location, thing.location) <= radius2]
+        return [
+            (thing, radius2 - distance_squared(location, thing.location))
+            for thing in self.things
+            if distance_squared(location, thing.location) <= radius2
+        ]
 
     def percept(self, agent):
         """By default, agent perceives things within a default radius."""
@@ -499,19 +522,25 @@ class XYEnvironment(Environment):
 
     def execute_action(self, agent, action):
         agent.bump = False
-        if action == 'TurnRight':
+        if action == "TurnRight":
             agent.direction += Direction.R
-        elif action == 'TurnLeft':
+        elif action == "TurnLeft":
             agent.direction += Direction.L
-        elif action == 'Forward':
-            agent.bump = self.move_to(agent, agent.direction.move_forward(agent.location))
-        elif action == 'Grab':
-            things = [thing for thing in self.list_things_at(agent.location) if agent.can_grab(thing)]
-            if things:    
+        elif action == "Forward":
+            agent.bump = self.move_to(
+                agent, agent.direction.move_forward(agent.location)
+            )
+        elif action == "Grab":
+            things = [
+                thing
+                for thing in self.list_things_at(agent.location)
+                if agent.can_grab(thing)
+            ]
+            if things:
                 agent.holding.append(things[0])
                 print("Grabbing ", things[0].__class__.__name__)
                 self.delete_thing(things[0])
-        elif action == 'Release':
+        elif action == "Release":
             if agent.holding:
                 dropped = agent.holding.pop()
                 print("Dropping ", dropped.__class__.__name__)
@@ -544,24 +573,31 @@ class XYEnvironment(Environment):
         if location is None:
             super().add_thing(thing)
         elif self.is_inbounds(location):
-            if (exclude_duplicate_class_items and
-                    any(isinstance(t, thing.__class__) for t in self.list_things_at(location))):
+            if exclude_duplicate_class_items and any(
+                isinstance(t, thing.__class__) for t in self.list_things_at(location)
+            ):
                 return
             super().add_thing(thing, location)
 
     def is_inbounds(self, location):
         """Checks to make sure that the location is inbounds (within walls if we have walls)"""
         x, y = location
-        return not (x < self.x_start or x > self.x_end or y < self.y_start or y > self.y_end)
+        return not (
+            x < self.x_start or x > self.x_end or y < self.y_start or y > self.y_end
+        )
 
     def random_location_inbounds(self, exclude=None):
         """Returns a random location that is inbounds (within walls if we have walls)"""
-        location = (random.randint(self.x_start, self.x_end),
-                    random.randint(self.y_start, self.y_end))
+        location = (
+            random.randint(self.x_start, self.x_end),
+            random.randint(self.y_start, self.y_end),
+        )
         if exclude is not None:
             while location == exclude:
-                location = (random.randint(self.x_start, self.x_end),
-                            random.randint(self.y_start, self.y_end))
+                location = (
+                    random.randint(self.x_start, self.x_end),
+                    random.randint(self.y_start, self.y_end),
+                )
         return location
 
     def delete_thing(self, thing):
@@ -603,6 +639,7 @@ class XYEnvironment(Environment):
 class Obstacle(Thing):
     """Something that can cause a bump, preventing an agent from
     moving into the same square it's in."""
+
     pass
 
 
@@ -693,11 +730,12 @@ class GraphicEnvironment(XYEnvironment):
     def conceal(self):
         """Hide the BlockGrid for this world"""
         self.visible = False
-        display(HTML(''))
+        display(HTML(""))
 
 
 # ______________________________________________________________________________
 # Continuous environment
+
 
 class ContinuousWorld(Environment):
     """Model for Continuous World"""
@@ -738,20 +776,25 @@ class VacuumEnvironment(XYEnvironment):
         self.add_walls()
 
     def thing_classes(self):
-        return [Wall, Dirt, ReflexVacuumAgent, RandomVacuumAgent,
-                TableDrivenVacuumAgent, ModelBasedVacuumAgent]
+        return [
+            Wall,
+            Dirt,
+            ReflexVacuumAgent,
+            RandomVacuumAgent,
+            TableDrivenVacuumAgent,
+            ModelBasedVacuumAgent,
+        ]
 
     def percept(self, agent):
         """The percept is a tuple of ('Dirty' or 'Clean', 'Bump' or 'None').
         Unlike the TrivialVacuumEnvironment, location is NOT perceived."""
-        status = ('Dirty' if self.some_things_at(
-            agent.location, Dirt) else 'Clean')
-        bump = ('Bump' if agent.bump else 'None')
+        status = "Dirty" if self.some_things_at(agent.location, Dirt) else "Clean"
+        bump = "Bump" if agent.bump else "None"
         return status, bump
 
     def execute_action(self, agent, action):
         agent.bump = False
-        if action == 'Suck':
+        if action == "Suck":
             dirt_list = self.list_things_at(agent.location, Dirt)
             if dirt_list != []:
                 dirt = dirt_list[0]
@@ -760,7 +803,7 @@ class VacuumEnvironment(XYEnvironment):
         else:
             super().execute_action(agent, action)
 
-        if action != 'NoOp':
+        if action != "NoOp":
             agent.performance -= 1
 
 
@@ -772,11 +815,20 @@ class TrivialVacuumEnvironment(Environment):
 
     def __init__(self):
         super().__init__()
-        self.status = {loc_A: random.choice(['Clean', 'Dirty']),
-                       loc_B: random.choice(['Clean', 'Dirty'])}
+        self.status = {
+            loc_A: random.choice(["Clean", "Dirty"]),
+            loc_B: random.choice(["Clean", "Dirty"]),
+        }
 
     def thing_classes(self):
-        return [Wall, Dirt, ReflexVacuumAgent, RandomVacuumAgent, TableDrivenVacuumAgent, ModelBasedVacuumAgent]
+        return [
+            Wall,
+            Dirt,
+            ReflexVacuumAgent,
+            RandomVacuumAgent,
+            TableDrivenVacuumAgent,
+            ModelBasedVacuumAgent,
+        ]
 
     def percept(self, agent):
         """Returns the agent's location, and the location status (Dirty/Clean)."""
@@ -785,16 +837,16 @@ class TrivialVacuumEnvironment(Environment):
     def execute_action(self, agent, action):
         """Change agent's location and/or location's status; track performance.
         Score 10 for each dirt cleaned; -1 for each move."""
-        if action == 'Right':
+        if action == "Right":
             agent.location = loc_B
             agent.performance -= 1
-        elif action == 'Left':
+        elif action == "Left":
             agent.location = loc_A
             agent.performance -= 1
-        elif action == 'Suck':
-            if self.status[agent.location] == 'Dirty':
+        elif action == "Suck":
+            if self.status[agent.location] == "Dirty":
                 agent.performance += 10
-            self.status[agent.location] = 'Clean'
+            self.status[agent.location] = "Clean"
 
     def default_location(self, thing):
         """Agents start in either location at random."""
@@ -959,7 +1011,7 @@ class Explorer(Agent):
 
 #         if isinstance(agent, Explorer) and self.in_danger(agent):
 #             return
-            
+
 #         agent.bump = False
 #         if action in ['TurnRight', 'TurnLeft', 'Forward', 'Grab']:
 #             super().execute_action(agent, action)
@@ -1005,7 +1057,7 @@ class Explorer(Agent):
 #                   .format("with Gold [+1000]!" if Gold() not in self.things else "without Gold [+0]"))
 #         return True
 
-    # TODO: Arrow needs to be implemented
+# TODO: Arrow needs to be implemented
 
 
 # ______________________________________________________________________________
@@ -1025,8 +1077,7 @@ def compare_agents(EnvFactory, AgentFactories, n=10, steps=1000):
     True
     """
     envs = [EnvFactory() for i in range(n)]
-    return [(A, test_agent(A, steps, copy.deepcopy(envs)))
-            for A in AgentFactories]
+    return [(A, test_agent(A, steps, copy.deepcopy(envs))) for A in AgentFactories]
 
 
 def test_agent(AgentFactory, steps, envs):

@@ -470,7 +470,7 @@ class Direction:
         >>> d = Direction('up')
         >>> l1 = d.move_forward((0, 0))
         >>> l1
-        (0, -1)
+        (0, 1)
         >>> d = Direction(Direction.R)
         >>> l1 = d.move_forward((0, 0))
         >>> l1
@@ -484,9 +484,11 @@ class Direction:
         elif self.direction == self.L:
             return iclass((x - 1, y))
         elif self.direction == self.U:
-            return iclass((x, y - 1))
+            return iclass((x, y + 1))  # Fixed: UP should increase y to match search.py
         elif self.direction == self.D:
-            return iclass((x, y + 1))
+            return iclass(
+                (x, y - 1)
+            )  # Fixed: DOWN should decrease y to match search.py
 
 
 class XYEnvironment(Environment):
@@ -1002,11 +1004,13 @@ class WumpusEnvironment(XYEnvironment):
         Result format: [Left, Right, Up, Down, Center / Current location]"""
         x, y = agent.location
         result = []
-        result.append(self.percepts_from(agent, (x - 1, y)))
-        result.append(self.percepts_from(agent, (x + 1, y)))
-        result.append(self.percepts_from(agent, (x, y - 1)))
-        result.append(self.percepts_from(agent, (x, y + 1)))
-        result.append(self.percepts_from(agent, (x, y)))
+        result.append(self.percepts_from(agent, (x - 1, y)))  # Left
+        result.append(self.percepts_from(agent, (x + 1, y)))  # Right
+        result.append(self.percepts_from(agent, (x, y + 1)))  # Up (fixed: increasing y)
+        result.append(
+            self.percepts_from(agent, (x, y - 1))
+        )  # Down (fixed: decreasing y)
+        result.append(self.percepts_from(agent, (x, y)))  # Center
 
         """The wumpus gives out a loud scream once it's killed."""
         wumpus = [thing for thing in self.things if isinstance(thing, Wumpus)]
@@ -1019,6 +1023,10 @@ class WumpusEnvironment(XYEnvironment):
     def execute_action(self, agent, action):
         """Modify the state of the environment based on the agent's actions.
         Performance score taken directly out of the book."""
+        if self.show:
+            print(
+                f"  Executing action '{action}' for {type(agent).__name__} at {agent.location}"
+            )
 
         if isinstance(agent, Explorer) and self.in_danger(agent):
             return
@@ -1066,14 +1074,62 @@ class WumpusEnvironment(XYEnvironment):
                     arrow_travel = agent.direction.move_forward(agent.location)
                 agent.has_arrow = False
 
+    def _format_percept(self, percept):
+        """Format the raw percept from environment into readable format"""
+        directions = ["Left", "Right", "Up", "Down", "Center"]
+        percept_info = []
+
+        for i, (direction, p) in enumerate(zip(directions, percept)):
+            if p and len(p) > 0:
+                items = [type(item).__name__ for item in p if item is not None]
+                if items:
+                    percept_info.append(f"{direction}: {', '.join(items)}")
+            else:
+                percept_info.append(f"{direction}: None")
+
+        return " | ".join(percept_info)
+
     def run(self, steps=1000):
         """Run the Environment for given number of time steps."""
+        if self.show:
+            print("=== INITIAL WORLD STATE ===")
+            print(self.to_str())
+            print()
+            print("=== SIMULATION STEPS ===")
+
         for step in range(steps):
             if self.is_done():
+                if self.show:
+                    print(f"Simulation ended at step {step}")
                 return
-            self.step()
+
+            # Get actions from all agents before executing
+            actions = []
+            for agent in self.agents:
+                print(f"Agent: {agent}")
+                if agent.alive:
+                    percept = self.percept(agent)
+                    action = agent.program(percept)
+                    actions.append(action)
+
+                    if self.show:
+                        # Format percept for display
+                        percept_str = self._format_percept(percept)
+                        print(f"Step {step + 1}:")
+                        print(f"  Percept: {percept_str}")
+                        print(f"  Action: {action}")
+                else:
+                    actions.append("")
+
+            # Execute all actions
+            for agent, action in zip(self.agents, actions):
+                self.execute_action(agent, action)
+
+            # Handle exogenous changes
+            self.exogenous_change()
+
             if self.show:
-                print("Step {}".format(step + 1))
+                print(f"  World after action:")
                 print(self.to_str())
                 print()
 
@@ -1179,17 +1235,14 @@ class WumpusTestEnvironment(WumpusEnvironment):
         # Add perimeter walls to define the interior grid bounds
         self.add_walls()
 
-        # Place a Pit in the top-right interior corner and Breezes around it
-        pit_x, pit_y = (self.width - 2, self.height - 2)
-        self.add_thing(Pit(), (pit_x, pit_y), True)
-        self.add_thing(Breeze(), (pit_x - 1, pit_y), True)
-        self.add_thing(Breeze(), (pit_x + 1, pit_y), True)
-        self.add_thing(Breeze(), (pit_x, pit_y - 1), True)
-        self.add_thing(Breeze(), (pit_x, pit_y + 1), True)
+        # Place Gold (which creates Glitter) in the top-right interior corner
+        # For a 4x4 world, reachable interior coordinates are (1,1) to (2,2), so top-right is (2,2)
+        wumpus_x, wumpus_y = (self.x_end - 1, self.y_end - 1)
+        self.add_thing(Wumpus(lambda x: ""), (wumpus_x, wumpus_y), True)
 
         # Add the Explorer at (1,1) facing north
         explorer = Explorer(program)
-        explorer.direction = Direction("up")
+        explorer.direction = Direction("right")
         self.add_thing(explorer, (1, 1), True)
         pass
 

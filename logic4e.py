@@ -35,7 +35,8 @@ import itertools
 import random
 from collections import defaultdict
 
-from agents import Agent, Glitter, Bump, Stench, Breeze, Scream
+from agents import Agent
+from agents4e import Glitter, Bump, Stench, Breeze, Scream
 from search import astar_search, PlanRoute
 from wumpus_types import WumpusPosition
 from utils4e import (
@@ -924,21 +925,21 @@ class WumpusKB(PropKB):
                 self.tell(equiv(breeze(x, y), new_disjunction(pits_in)))
                 self.tell(equiv(stench(x, y), new_disjunction(wumpus_in)))
 
-        # Rule that describes existence of at least one Wumpus
-        wumpus_at_least = list()
-        for x in range(1, dimrow + 1):
-            for y in range(1, dimrow + 1):
-                wumpus_at_least.append(wumpus(x, y))
+        # # Rule that describes existence of at least one Wumpus
+        # wumpus_at_least = list()
+        # for x in range(1, dimrow + 1):
+        #     for y in range(1, dimrow + 1):
+        #         wumpus_at_least.append(wumpus(x, y))
 
-        self.tell(new_disjunction(wumpus_at_least))
+        # self.tell(new_disjunction(wumpus_at_least))
 
-        # Rule that describes existence of at most one Wumpus
-        for i in range(1, dimrow + 1):
-            for j in range(1, dimrow + 1):
-                for u in range(1, dimrow + 1):
-                    for v in range(1, dimrow + 1):
-                        if i != u or j != v:
-                            self.tell(~wumpus(i, j) | ~wumpus(u, v))
+        # # Rule that describes existence of at most one Wumpus
+        # for i in range(1, dimrow + 1):
+        #     for j in range(1, dimrow + 1):
+        #         for u in range(1, dimrow + 1):
+        #             for v in range(1, dimrow + 1):
+        #                 if i != u or j != v:
+        #                     self.tell(~wumpus(i, j) | ~wumpus(u, v))
 
         # Temporal rules at time zero
         self.tell(location(1, 1, 0))
@@ -1137,7 +1138,19 @@ class HybridWumpusAgent(Agent):
         super().__init__(self.execute)
 
     def execute(self, percept):
-        self.kb.make_percept_sentence(percept, self.t)
+        # Convert environment percept format to single percept object
+        # Environment provides: [[<Bump>], [None], [<Bump>], [None], [None]]
+        # the directions are: Left, Right, Up, Down, Center
+        # KB expects: single percept object like Bump(), Glitter(), etc.
+
+        # Process ALL percepts from all directions, not just the first one
+
+        for direction_percept in percept:
+            if direction_percept and len(direction_percept) > 0:
+                # Process each percept from this direction
+                for single_percept in direction_percept:
+                    if single_percept is not None:
+                        self.kb.make_percept_sentence(single_percept, self.t)
         self.kb.add_temporal_sentences(self.t)
 
         temp = list()
@@ -1150,11 +1163,11 @@ class HybridWumpusAgent(Agent):
 
         if self.kb.ask_if_true(facing_north(self.t)):
             self.current_position = WumpusPosition(temp[0], temp[1], "UP")
-        elif self.kb.ask_if_true(facing_south(self.t)):
+        if self.kb.ask_if_true(facing_south(self.t)):
             self.current_position = WumpusPosition(temp[0], temp[1], "DOWN")
-        elif self.kb.ask_if_true(facing_west(self.t)):
+        if self.kb.ask_if_true(facing_west(self.t)):
             self.current_position = WumpusPosition(temp[0], temp[1], "LEFT")
-        elif self.kb.ask_if_true(facing_east(self.t)):
+        if self.kb.ask_if_true(facing_east(self.t)):
             self.current_position = WumpusPosition(temp[0], temp[1], "RIGHT")
 
         safe_points = list()
