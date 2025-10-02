@@ -1056,7 +1056,8 @@ class WumpusEnvironment(XYEnvironment):
             agent.performance -= 1
         elif action == "Climb":
             if agent.location == (1, 1):  # Agent can only climb out of (1,1)
-                agent.performance += 1000 if Gold() in agent.holding else 0
+                has_gold = any(isinstance(item, Gold) for item in agent.holding)
+                agent.performance += 1000 if has_gold else 0
                 self.delete_thing(agent)
         elif action == "Shoot":
             """The arrow travels straight down the path the agent is facing"""
@@ -1153,11 +1154,16 @@ class WumpusEnvironment(XYEnvironment):
             else:
                 print("Death by {} [-1000].".format(explorer[0].killed_by))
         else:
+            # Check if any agent has gold in their holding
+            explorer = [agent for agent in self.agents if isinstance(agent, Explorer)]
+            if explorer:
+                has_gold = any(isinstance(item, Gold) for item in explorer[0].holding)
+            else:
+                has_gold = False
+
             print(
                 "Explorer climbed out {}.".format(
-                    "with Gold [+1000]!"
-                    if Gold() not in self.things
-                    else "without Gold [+0]"
+                    "with Gold [+1000]!" if has_gold else "without Gold [+0]"
                 )
             )
         return True
@@ -1239,7 +1245,11 @@ class WumpusTestEnvironment(WumpusEnvironment):
         # For a 4x4 world, reachable interior coordinates are (1,1) to (2,2), so top-right is (2,2)
         wumpus_x, wumpus_y = (self.x_end - 1, self.y_end - 1)
         self.add_thing(Wumpus(lambda x: ""), (wumpus_x, wumpus_y), True)
-
+        # add gold at (2,1)
+        self.add_thing(Gold(), (3, 1), True)
+        # add pit at (2,2)
+        self.add_thing(Pit(), (2, 3), True)
+        # add breeze at (2,2)
         # Add the Explorer at (1,1) facing north
         explorer = Explorer(program)
         explorer.direction = Direction("right")

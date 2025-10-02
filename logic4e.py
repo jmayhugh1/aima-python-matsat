@@ -1118,12 +1118,6 @@ class WumpusKB(PropKB):
 
 class WumpusSATKB(WumpusKB):
     def ask_if_true(self, query):
-        if (
-            query == percept_glitter(3)
-            or query == percept_glitter(2)
-            or query == percept_glitter(1)
-        ):
-            print("query", query)
         formula = associate("&", list(self.clauses)) & ~query
         result = dpll_satisfiable(formula)
         print("result of asking if true", query, result)
@@ -1369,7 +1363,7 @@ def SAT_plan(init, transition, goal, t_max, SAT_solver=dpll_satisfiable):
             return extract_solution(model)
     return None
 
-
+      
 # ______________________________________________________________________________
 # Chapter 9 Inference in First Order Logic
 # 9.2 Unification and First Order Inference

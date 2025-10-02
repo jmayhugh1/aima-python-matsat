@@ -1,4 +1,9 @@
 import pytest
+import sys
+import os
+
+# Add parent directory to path so we can import logic4e
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from logic4e import *
 from utils4e import expr_handle_infix_ops, count
