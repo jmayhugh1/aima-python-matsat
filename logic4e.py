@@ -50,6 +50,7 @@ from utils4e import (
     expr,
     subexpressions,
 )
+from typing import List, Tuple
 
 
 # ______________________________________________________________________________
@@ -1363,7 +1364,7 @@ def SAT_plan(init, transition, goal, t_max, SAT_solver=dpll_satisfiable):
             return extract_solution(model)
     return None
 
-      
+
 # ______________________________________________________________________________
 # Chapter 9 Inference in First Order Logic
 # 9.2 Unification and First Order Inference

@@ -1246,15 +1246,177 @@ class WumpusTestEnvironment(WumpusEnvironment):
         wumpus_x, wumpus_y = (self.x_end - 1, self.y_end - 1)
         self.add_thing(Wumpus(lambda x: ""), (wumpus_x, wumpus_y), True)
         # add gold at (2,1)
-        self.add_thing(Gold(), (3, 1), True)
+        # self.add_thing(Gold(), (3, 1), True)
         # add pit at (2,2)
-        self.add_thing(Pit(), (2, 3), True)
+        # self.add_thing(Pit(), (2, 3), True)
         # add breeze at (2,2)
         # Add the Explorer at (1,1) facing north
         explorer = Explorer(program)
+        explorer2 = Explorer(program)
         explorer.direction = Direction("right")
         self.add_thing(explorer, (1, 1), True)
+        explorer2.direction = Direction("right")
+        self.add_thing(explorer2, (3, 1), True)
         pass
+
+
+class MultiWumpusEnvironment(WumpusEnvironment):
+    """Multi-agent Wumpus environment that passes agent_id to agent programs"""
+
+    def __init__(self, agents_list, agent_locations, width=6, height=6, show=False):
+        """
+        Initialize a multi-agent Wumpus environment
+
+        Args:
+            agents_list: List of agent objects (e.g., MultiAgentHybridWumpusAgent instances)
+            agent_locations: List of (x, y) tuples for starting locations
+            width: Width of the environment
+            height: Height of the environment
+            show: Whether to show debug output
+        """
+        self.agents_list = agents_list
+        self.agent_locations = agent_locations
+        # Call parent init without agent_program since we handle agents differently
+        XYEnvironment.__init__(self, width, height)
+        self.show = show
+        self.init_world_multi()
+
+    def init_world_multi(self):
+        """Initialize the world with multiple agents"""
+        # Add walls
+        self.add_walls()
+
+        # Add pits with lower probability for testing
+        for x in range(self.x_start, self.x_end):
+            for y in range(self.y_start, self.y_end):
+                # Skip agent starting locations
+                if (x, y) in self.agent_locations:
+                    continue
+                if random.random() < self.pit_probability:
+                    self.add_thing(Pit(), (x, y), True)
+
+        # Add Wumpus (avoid agent starting locations)
+        exclude_locs = set(self.agent_locations)
+        w_x, w_y = self.random_location_inbounds(exclude=exclude_locs)
+        self.add_thing(Wumpus(lambda x: ""), (w_x, w_y), True)
+
+        # Add Gold (avoid agent starting locations)
+        gold_loc = self.random_location_inbounds(exclude=exclude_locs)
+        self.add_thing(Gold(), gold_loc, True)
+
+        # Add all agents
+        for i, (agent, location) in enumerate(
+            zip(self.agents_list, self.agent_locations)
+        ):
+            explorer = Explorer(agent.program)
+            explorer.direction = Direction("right")
+            self.add_thing(explorer, location, True)
+
+        if self.show:
+            print("Multi-agent world initialized")
+            print(self.to_str())
+
+    def step(self):
+        """
+        Override step to pass (agent_id, percepts) tuple to each agent's program
+        Each agent receives ONLY its own percepts (private to that agent)
+        """
+        if not self.is_done():
+            if self.show:
+                print("\n" + "=" * 70)
+                print("WORLD STATE BEFORE ACTIONS:")
+                print("=" * 70)
+                print(self.to_str())
+                print()
+
+            # Filter to only Explorer agents (skip Wumpus and other non-Explorer agents)
+            explorer_agents = [
+                agent for agent in self.agents if isinstance(agent, Explorer)
+            ]
+
+            actions = []
+            for agent_id, agent in enumerate(explorer_agents):
+                if agent.alive:
+                    # Get percepts for THIS SPECIFIC agent ONLY (private percepts)
+                    percepts = self.percept(agent)
+
+                    if self.show:
+                        print(f"\n--- Agent {agent_id} ---")
+                        print(f"  Location: {agent.location}")
+                        print(f"  Direction: {agent.direction}")
+                        print(f"  Private Percepts: {self._format_percept(percepts)}")
+
+                    # Call agent.program with (agent_id, percepts) tuple
+                    # The agent_id ensures percepts go to the correct private KB
+                    action = agent.program((agent_id, percepts))
+                    actions.append(action)
+
+                    if self.show:
+                        print(f"  Action chosen: {action}")
+                else:
+                    actions.append("")
+                    if self.show:
+                        print(f"\n--- Agent {agent_id} ---")
+                        print(f"  Status: DEAD")
+
+            # Execute all actions
+            if self.show:
+                print("\n" + "-" * 70)
+                print("EXECUTING ACTIONS:")
+                print("-" * 70)
+
+            for agent_id, (agent, action) in enumerate(zip(explorer_agents, actions)):
+                if self.show and action:
+                    print(f"Agent {agent_id}: {action} at {agent.location}")
+                self.execute_action(agent, action)
+
+            self.exogenous_change()
+
+            if self.show:
+                print("\n" + "=" * 70)
+                print("WORLD STATE AFTER ACTIONS:")
+                print("=" * 70)
+                print(self.to_str())
+                print("=" * 70)
+
+    def random_location_inbounds(self, exclude=None):
+        """Return a random location that is inbounds (and not in exclude set)"""
+        if exclude is None:
+            exclude = set()
+        elif not isinstance(exclude, set):
+            if isinstance(exclude, tuple):
+                exclude = {exclude}
+            else:
+                exclude = set(exclude)
+
+        while True:
+            location = (
+                random.randint(self.x_start, self.x_end - 1),
+                random.randint(self.y_start, self.y_end - 1),
+            )
+            if location not in exclude:
+                return location
+
+    def run(self, steps=1000):
+        """
+        Run the multi-agent environment for given number of time steps.
+        Uses the custom step() method that passes (agent_id, percepts) tuples.
+        """
+        if self.show:
+            explorer_count = len([a for a in self.agents if isinstance(a, Explorer)])
+            print("=== MULTI-AGENT WUMPUS WORLD SIMULATION ===")
+            print(f"Grid: {self.x_end - self.x_start}x{self.y_end - self.y_start}")
+            print(f"Explorer Agents: {explorer_count}")
+            print("=" * 70)
+
+        for step_num in range(steps):
+            if self.is_done():
+                if self.show:
+                    print(f"\n{'='*70}")
+                    print(f"Simulation ended at step {step_num}")
+                    print(f"{'='*70}")
+                return
+            self.step()  # Calls MultiWumpusEnvironment.step()
 
 
 # ______________________________________________________________________________
