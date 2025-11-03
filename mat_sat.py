@@ -3,7 +3,14 @@ from utils4e import Expr, expr
 from logic4e import to_cnf, conjuncts, prop_symbols, dpll_satisfiable
 import numpy as np
 import cppimport
+import pathlib
+import subprocess
+import os
+import re
+import time
 
+
+QMAT_DIR = "qmat-mat-encodings"
 # ---------- helpers: build instance matrices ----------
 
 
@@ -126,14 +133,175 @@ def mat_sat(
     )
 
 
-def mat_sat_cpp(formula : Expr) -> dict[Expr, bool] | None:
+def mat_sat_cpp(formula: Expr) -> dict[Expr, bool] | None:
     if type(formula) == Expr:
         formula = to_cnf(formula)
     if type(formula) != str:
         formula = str(formula)
-        if len(formula) >= 2 and formula[0] == '(' and formula[-1] == ')':
+        if len(formula) >= 2 and formula[0] == "(" and formula[-1] == ")":
             formula = formula[1:-1]
     m = cppimport.imp("matsat")
-    assignment = m.mat_sat(formula, max_itr = 2000)
-    return {expr(key) : val for key, val in assignment.items()} if assignment else None
+    assignment = m.mat_sat(formula, max_itr=2000)
+    return {expr(key): val for key, val in assignment.items()} if assignment else None
 
+
+def compile_mpspdz(qmat_dir: str = QMAT_DIR) -> None:
+    """Compiles the MP-SPDZ program"""
+    mp_spdz_dir = pathlib.Path("MP-SPDZ").resolve()
+    script_path = mp_spdz_dir / "Programs" / "Source" / "multiparty_matsat.py"
+    qmat_path = pathlib.Path(qmat_dir).resolve()
+
+    if not script_path.exists():
+        raise FileNotFoundError(f"MP-SPDZ source not found: {script_path}")
+    if not qmat_path.exists():
+        raise FileNotFoundError(f"QMAT directory not found: {qmat_path}")
+
+    # Set PYTHONPATH if needed
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(mp_spdz_dir) + (":" + env.get("PYTHONPATH", ""))
+
+    # Use relative path when running from MP-SPDZ directory
+    script_rel_path = pathlib.Path("Programs") / "Source" / "multiparty_matsat.py"
+
+    result = subprocess.run(
+        ["python3", str(script_rel_path), "-d", str(qmat_path)],
+        cwd=str(mp_spdz_dir),
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Compilation failed:\n{result.stderr}\n{result.stdout}")
+
+
+def run_mpspdz(
+    qmat_dir: str = QMAT_DIR, protocol: str = "mascot", timeout: int = 300
+) -> bool:
+    """Runs the MP-SPDZ program and parses is_solved from the output.
+
+    Returns True if is_solved = 1, False if is_solved = 0.
+    """
+    mp_spdz_dir = pathlib.Path("MP-SPDZ").resolve()
+    run_script = mp_spdz_dir / "run-parties-proc.py"
+    qmat_path = pathlib.Path(qmat_dir).resolve()
+
+    if not run_script.exists():
+        raise FileNotFoundError(f"run-parties-proc.py not found: {run_script}")
+    if not qmat_path.exists():
+        raise FileNotFoundError(f"QMAT directory not found: {qmat_path}")
+
+    # Run the script - it will start all parties and wait for them
+    try:
+        result = subprocess.run(
+            ["python3", str(run_script), str(qmat_path), protocol, "matsat"],
+            cwd=str(mp_spdz_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(
+            f"MP-SPDZ execution timed out after {timeout} seconds. "
+            "The computation may still be running."
+        )
+
+    # Parse output for is_solved
+    # run-parties-proc.py outputs: [party X] is_solved = Y
+    output = result.stdout + result.stderr
+
+    # Look for is_solved pattern in the output (handles both formats)
+    # Match "[party X] is_solved = Y" or just "is_solved = Y"
+    match = re.search(
+        r"\[party\s+\d+\]\s+is_solved\s*=\s*(\d+)|is_solved\s*=\s*(\d+)", output
+    )
+    if match:
+        is_solved_value = int(match.group(1) or match.group(2))
+        return bool(is_solved_value)
+
+    # If not found, check if there were errors
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"MP-SPDZ execution failed with return code {result.returncode}.\n"
+            f"Stderr: {result.stderr}\n"
+            f"Stdout: {result.stdout}"
+        )
+
+    # If we get here, we couldn't find is_solved in the output
+    raise RuntimeError(
+        f"Could not find is_solved value in output.\n"
+        f"Stdout: {result.stdout}\n"
+        f"Stderr: {result.stderr}"
+    )
+
+
+def mat_sat_mpspdz(formulas: List[Expr]) -> dict[Expr, bool] | None:
+    """Run MatSat using MP-SPDZ multi-party computation.
+
+    Returns a dict mapping symbols to bool values if satisfiable, None if unsatisfiable.
+    """
+    if not formulas:
+        return None
+
+    # Collect all symbols from all formulas to ensure consistent dimensions
+    all_symbols = set()
+    for formula in formulas:
+        cnf = to_cnf(formula)
+        all_symbols.update(prop_symbols(cnf))
+
+    # Sort symbols for consistent ordering
+    syms = sorted(list(all_symbols), key=str)
+    n = len(syms)
+
+    if n == 0:
+        return None
+
+    # Build matrices using consistent symbol set
+    Q_matrices = []
+    for formula in formulas:
+        Q1, Q2, formula_syms = _build_Q1_Q2(formula)
+        formula_n = len(formula_syms)
+
+        # Ensure Q1 and Q2 have n columns (pad with zeros for missing symbols)
+        if formula_n < n:
+            Q1_padded = np.zeros((Q1.shape[0], n), dtype=np.float64)
+            Q2_padded = np.zeros((Q2.shape[0], n), dtype=np.float64)
+            # Map formula symbols to full symbol set
+            for i, sym in enumerate(formula_syms):
+                j = syms.index(sym)
+                Q1_padded[:, j] = Q1[:, i]
+                Q2_padded[:, j] = Q2[:, i]
+            Q1, Q2 = Q1_padded, Q2_padded
+
+        # Append the q1 and q2 left to right (concatenate horizontally)
+        Q_matrix = np.concatenate((Q1, Q2), axis=1)
+        Q_matrices.append(Q_matrix)
+
+    # Ensure QMAT_DIR exists
+    qmat_path = pathlib.Path(QMAT_DIR)
+    qmat_path.mkdir(exist_ok=True)
+
+    # Write matrices to QMAT_DIR as integers
+    # get_dims() reads space-separated rows for dimension checking
+    # But sint.get_input_from() reads one integer per line during execution
+    # So we write as space-separated rows for get_dims(), and the input will be
+    # provided as one integer per line during execution
+    for i, q_matrix in enumerate(Q_matrices):
+        # Convert to integers and write as space-separated rows
+        q_matrix_int = q_matrix.astype(np.int32)
+        np.savetxt(f"{QMAT_DIR}/q{i}.qmat", q_matrix_int, delimiter=" ", fmt="%d")
+
+    # Compile the MP-SPDZ program
+    compile_mpspdz(QMAT_DIR)
+
+    # Run the MP-SPDZ program and get is_solved result
+    is_solved = run_mpspdz(QMAT_DIR)
+
+    if not is_solved:
+        return None  # UNSAT
+
+    # If SAT, we need to extract the assignment from the output
+    # For now, return an empty dict to indicate SAT but assignment not parsed
+    # TODO: Parse the u[i] values from output to get actual assignment
+    return {}
