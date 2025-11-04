@@ -133,15 +133,6 @@ def test_mat_sat_cpp():
 #     print(result)
 
 
-
-
-
-
-
-
-
-
-
 ## tests for async mat_sat_mpspdz
 def test_mat_sat_mpspdz_async_concurrent():
     """Test concurrent execution of async mat_sat_mpspdz with multiple independent calls."""
