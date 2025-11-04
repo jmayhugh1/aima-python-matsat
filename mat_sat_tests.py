@@ -2,6 +2,7 @@ from mat_sat import *
 from utils4e import expr
 from utils import Expr
 from logic4e import to_cnf, conjuncts, prop_symbols, pl_true, dpll_satisfiable
+import asyncio
 
 
 def verifier(assignment: dict[str, bool], f: Expr | str):
@@ -183,3 +184,122 @@ def test_mat_sat_mpspdz_simple():
 #     result = mat_sat_mpspdz(formulas)
 #     # These formulas are satisfiable
 #     assert result is not None, "Complex formulas should be satisfiable"
+
+
+## tests for async mat_sat_mpspdz
+def test_mat_sat_mpspdz_async_concurrent():
+    """Test concurrent execution of async mat_sat_mpspdz with multiple independent calls."""
+
+    async def run_concurrent_tests():
+        # Create multiple independent formula sets that can run concurrently
+        # Each should use its own temporary subfolder and port
+        formula_sets = [
+            [expr("A | B"), expr("C | D")],  # First concurrent call
+            [expr("E | F"), expr("G | H")],  # Second concurrent call
+            [expr("I | J"), expr("K | L")],  # Third concurrent call
+            [expr("M | N"), expr("O | P")],  # Fourth concurrent call
+        ]
+
+        # Run all calls concurrently with different ports to avoid conflicts
+        # Use ports 5001, 5101, 5201 for each concurrent call
+        ports = [5001, 5101, 5201, 5301]
+        results = await asyncio.gather(
+            *[
+                mat_sat_mpspdz_async(formulas, port=port)
+                for formulas, port in zip(formula_sets, ports)
+            ]
+        )
+
+        # All should be satisfiable
+        for i, result in enumerate(results):
+            assert result is not None, f"Formula set {i} should be satisfiable"
+
+        # Verify we got results from all concurrent calls
+        assert len(results) == len(
+            formula_sets
+        ), "Should have results from all concurrent calls"
+
+    # Run the async test
+    asyncio.run(run_concurrent_tests())
+
+
+# def test_mat_sat_mpspdz_async_concurrent_extended():
+#     """Extended test for concurrent execution with more complex formulas and more parties."""
+
+#     async def run_extended_concurrent_tests():
+#         # Create multiple complex formula sets with varying complexity
+#         # Each set represents a different party with multiple clauses
+#         formula_sets = [
+#             # Set 0: Simple satisfiable formulas
+#             [expr("A | B"), expr("C | D")],
+#             # Set 1: Formulas with dependencies (chain of implications)
+#             [expr("A | B"), expr("~A | C")],
+#             # Set 2: Formulas with mixed variables
+#             [expr("X | Y | Z"), expr("~X | W")],
+#             # Set 3: More complex multi-clause formulas
+#             [
+#                 expr("(P | Q) & (~P | R)"),
+#                 expr("(~Q | S) & (~R | T)"),
+#                 expr("(S | T | U)"),
+#             ],
+#             # Set 4: Formulas with different variable sets
+#             [expr("M | N"), expr("O | P"), expr("Q | R"), expr("S | T")],
+#             # Set 5: Complex nested formulas
+#             [
+#                 expr("(A1 | A2) & (~A1 | A3)"),
+#                 expr("(A2 | A4) & (~A3 | A5)"),
+#                 expr("(A4 | A5 | A6)"),
+#             ],
+#             # Set 6: Larger variable space
+#             [
+#                 expr("B1 | B2 | B3"),
+#                 expr("~B1 | B4"),
+#                 expr("~B2 | B5"),
+#                 expr("~B3 | B6"),
+#                 expr("B4 | B5 | B6"),
+#             ],
+#         ]
+
+#         # Use different ports for each concurrent call to avoid conflicts
+#         # Ports spaced 100 apart to ensure no conflicts
+#         ports = [5001, 5101, 5201, 5301, 5401, 5501, 5601]
+
+#         # Run all calls concurrently
+#         results = await asyncio.gather(
+#             *[
+#                 mat_sat_mpspdz_async(formulas, port=port)
+#                 for formulas, port in zip(formula_sets, ports)
+#             ],
+#             return_exceptions=True,  # Capture exceptions to verify all complete
+#         )
+
+#         # Verify all calls completed (either with result or exception)
+#         assert len(results) == len(
+#             formula_sets
+#         ), "Should have results from all concurrent calls"
+
+#         # Check that all successful results are satisfiable
+#         successful_results = []
+#         for i, result in enumerate(results):
+#             if isinstance(result, Exception):
+#                 # If there was an exception, that's a problem (but we'll note it)
+#                 raise AssertionError(f"Formula set {i} raised exception: {result}")
+#             else:
+#                 # All should be satisfiable (return dict or None, but not False)
+#                 assert result is not None, f"Formula set {i} should be satisfiable"
+#                 successful_results.append(result)
+
+#         # Verify we got satisfiable results for all sets
+#         assert len(successful_results) == len(
+#             formula_sets
+#         ), f"Expected {len(formula_sets)} successful results, got {len(successful_results)}"
+
+#         # Additional verification: ensure results are consistent
+#         # Each result should be a dict (empty dict indicates SAT, None indicates UNSAT)
+#         for i, result in enumerate(successful_results):
+#             assert isinstance(
+#                 result, dict
+#             ), f"Formula set {i} should return a dict for satisfiable formulas, got {type(result)}"
+
+#     # Run the extended async test
+#     asyncio.run(run_extended_concurrent_tests())
