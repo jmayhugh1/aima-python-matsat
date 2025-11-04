@@ -73,6 +73,8 @@ target/
 .env
 .idea
 
+*.qmat
+
 # for macOS
 .DS_Store
 ._.DS_Store

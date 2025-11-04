@@ -24,7 +24,12 @@ from logic4e import (
 from agents4e import Bump, Glitter, Stench, Breeze, Scream
 from search import PlanRoute, astar_search
 from typing import *
-from mat_sat import mat_sat_cpp
+from mat_sat import (
+    mat_sat_cpp,
+    mat_sat_mpspdz_async,
+    reserve_ports_for_formula_sets,
+)
+import asyncio
 
 LEFT = 0
 RIGHT = 1
@@ -263,7 +268,7 @@ class MultiAgentWumpusKB(KB):
                 elif i == 2:
                     self.tell(agent_id, ~breeze(cx, cy))
 
-    def ask_if_true(self, agent_id: int, query):
+    def ask_if_true(self, agent_id: int, query, secure=False):
         """
         Query using public KB and ALL agents' private KBs combined.
 
@@ -334,8 +339,176 @@ class MultiAgentWumpusKB(KB):
         print("=" * 50)
 
 
+class MultiAgentWumpusKBMatSatSecure(MultiAgentWumpusKB):
+    """Version of MultiAgentWumpusKB that uses secure MatSat multi-party computation.
+
+    Each agent's private knowledge is kept private, and queries are answered
+    using secure multi-party computation where each agent contributes their
+    private KB as a separate party.
+    """
+
+    def _build_agent_formulas(self) -> List[Expr]:
+        """Build formulas for MP-SPDZ where each agent contributes their private KB + public KB.
+
+        Returns:
+            List of formulas, one per agent (each formula becomes one party in MP-SPDZ)
+        """
+        public_clauses = list(self.public_KB.clauses)
+        formulas = []
+
+        # For each agent, create a formula: (public KB & agent's private KB)
+        for agent_idx in range(self.num_agents):
+            agent_private_clauses = list(self.private_KB[agent_idx].clauses)
+            if agent_private_clauses:
+                # Combine public and this agent's private clauses
+                agent_clauses = public_clauses + agent_private_clauses
+                agent_formula = associate("&", agent_clauses)
+                formulas.append(agent_formula)
+            elif public_clauses:
+                # If agent has no private clauses, just use public KB
+                formulas.append(associate("&", public_clauses))
+
+        return formulas
+
+    def _build_query_formulas(self, query: Expr) -> List[Expr] | None:
+        """Build formulas with query added for unsatisfiability check.
+
+        Args:
+            query: The query expression to check
+
+        Returns:
+            List of formulas with ~query added, or None if no formulas available
+        """
+        formulas = self._build_agent_formulas()
+        if not formulas:
+            return None
+
+        # Add ~query to check if (KB & ~query) is unsatisfiable
+        # We add ~query to the first formula
+        formulas[0] = formulas[0] & ~query
+        return formulas
+
+    def _validate_agent_id(self, agent_id: int) -> None:
+        """Validate agent_id is within bounds."""
+        assert (
+            0 <= agent_id < self.num_agents
+        ), f"Invalid agent_id {agent_id}, must be 0-{self.num_agents-1}"
+
+    def ask_if_true(self, agent_id: int, query):
+        """
+        Query using secure MatSat solver with public KB and ALL agents' private KBs combined.
+
+        Uses MP-SPDZ secure multi-party computation where:
+        - Public KB is shared by all parties (included in each party's formula)
+        - Each agent's private KB is a separate party
+        - The query is checked for unsatisfiability (KB & ~query)
+
+        Args:
+            agent_id: The agent making the query
+            query: The query expression to check
+
+        Returns:
+            True if KB entails query, False otherwise
+        """
+        self._validate_agent_id(agent_id)
+
+        formulas = self._build_query_formulas(query)
+        if not formulas:
+            return False
+
+        # Run secure multi-party MatSat computation
+        # Each formula becomes one party in MP-SPDZ
+        result = asyncio.run(mat_sat_mpspdz_async(formulas))
+
+        # If result is None, the formula is unsatisfiable, meaning KB entails query
+        # If result is a dict, the formula is satisfiable, meaning KB does not entail query
+        return result is None
+
+    async def ask_if_true_async(self, agent_id: int, query):
+        """
+        Async version of ask_if_true for concurrent queries.
+
+        Args:
+            agent_id: The agent making the query
+            query: The query expression to check
+
+        Returns:
+            True if KB entails query, False otherwise
+        """
+        self._validate_agent_id(agent_id)
+
+        formulas = self._build_query_formulas(query)
+        if not formulas:
+            return False
+
+        # Run secure multi-party MatSat computation
+        result = await mat_sat_mpspdz_async(formulas)
+        return result is None
+
+    async def ask_if_true_batch_async(self, agent_id: int, queries: List[Expr]):
+        """
+        Batch version that processes multiple queries concurrently.
+
+        This method collects all queries and processes them concurrently using
+        the secure multi-party computation approach, reserving ports upfront
+        to avoid race conditions.
+
+        Args:
+            agent_id: The agent making the queries
+            queries: List of query expressions to check
+
+        Returns:
+            List of boolean results, one for each query
+        """
+        self._validate_agent_id(agent_id)
+
+        if not queries:
+            return []
+
+        # Build formulas for each query
+        all_formula_sets = []
+        for query in queries:
+            formulas = self._build_query_formulas(query)
+            all_formula_sets.append(formulas if formulas else [])
+
+        # Reserve ports upfront for all queries to avoid race conditions
+        valid_formula_sets = [fs for fs in all_formula_sets if fs]
+        if not valid_formula_sets:
+            return [False] * len(queries)
+
+        reserved_ports = await reserve_ports_for_formula_sets(valid_formula_sets)
+
+        # Run all queries concurrently with pre-reserved ports
+        results = await asyncio.gather(
+            *[
+                mat_sat_mpspdz_async(formula_set, port=port)
+                for formula_set, port in zip(valid_formula_sets, reserved_ports)
+            ],
+            return_exceptions=True,
+        )
+
+        # Process results: None means unsatisfiable (KB entails query)
+        # Map results back to original query list
+        final_results = []
+        valid_idx = 0
+        for formula_set in all_formula_sets:
+            if formula_set:
+                # This query had a valid formula set
+                result = results[valid_idx]
+                final_results.append(
+                    result is None if not isinstance(result, Exception) else False
+                )
+                valid_idx += 1
+            else:
+                # This query had no valid formula set
+                final_results.append(False)
+
+        return final_results
+
+
 class MultiAgentWumpusKBMatSat(MultiAgentWumpusKB):
     """
+
     Version of MultiAgentWumpusKB that uses MatSat solver for faster inference.
 
     TEMPORARY FOR DEMONSTRATION: Currently configured to share ALL percepts
@@ -570,11 +743,31 @@ class MultiAgentHybridWumpusAgent(Agent):
 
         self.visited.add((CurrX, CurrY))
 
-        safe_points = list()
+        # Collect all queries for concurrent processing
+        queries = []
+        query_positions = []
         for i in range(1, self.dimrow + 1):
             for j in range(1, self.dimrow + 1):
-                if self.kb.ask_if_true(self.agent_id, ok_to_move(i, j)):
-                    safe_points.append([i, j])
+                queries.append(ok_to_move(i, j))
+                query_positions.append((i, j))
+
+        # Process all queries concurrently if using async KB
+        if hasattr(self.kb, "ask_if_true_batch_async"):
+            query_results = asyncio.run(
+                self.kb.ask_if_true_batch_async(self.agent_id, queries)
+            )
+            safe_points = [
+                [i, j]
+                for (i, j), result in zip(query_positions, query_results)
+                if result
+            ]
+        else:
+            # Fallback to sequential processing
+            safe_points = list()
+            for i in range(1, self.dimrow + 1):
+                for j in range(1, self.dimrow + 1):
+                    if self.kb.ask_if_true(self.agent_id, ok_to_move(i, j)):
+                        safe_points.append([i, j])
 
         # check if we have glitter and can leave
         if self.kb.ask_if_true(self.agent_id, glitter(CurrX, CurrY)):
@@ -599,11 +792,31 @@ class MultiAgentHybridWumpusAgent(Agent):
             self.plan.extend(route)
 
         if len(self.plan) == 0 and self.have_arrow:
-            possible_wumpus = list()
+            # Collect all wumpus queries for concurrent processing
+            wumpus_queries = []
+            wumpus_positions = []
             for i in range(1, self.dimrow + 1):
                 for j in range(1, self.dimrow + 1):
-                    if not self.kb.ask_if_true(self.agent_id, ~wumpus(i, j)):
-                        possible_wumpus.append([i, j])
+                    wumpus_queries.append(~wumpus(i, j))
+                    wumpus_positions.append((i, j))
+
+            # Process all queries concurrently if using async KB
+            if hasattr(self.kb, "ask_if_true_batch_async"):
+                wumpus_results = asyncio.run(
+                    self.kb.ask_if_true_batch_async(self.agent_id, wumpus_queries)
+                )
+                possible_wumpus = [
+                    [i, j]
+                    for (i, j), result in zip(wumpus_positions, wumpus_results)
+                    if not result
+                ]
+            else:
+                # Fallback to sequential processing
+                possible_wumpus = list()
+                for i in range(1, self.dimrow + 1):
+                    for j in range(1, self.dimrow + 1):
+                        if not self.kb.ask_if_true(self.agent_id, ~wumpus(i, j)):
+                            possible_wumpus.append([i, j])
             self.plan.extend(
                 self.plan_shot(self.current_position, possible_wumpus, safe_points)
             )

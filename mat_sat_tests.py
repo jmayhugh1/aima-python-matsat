@@ -149,6 +149,7 @@ def test_mat_sat_mpspdz_async_concurrent():
 
         # Reserve ports upfront for all formula sets to avoid race conditions
         reserved_ports = await reserve_ports_for_formula_sets(formula_sets)
+        assert len(reserved_ports) == len(formula_sets)
 
         # Run all calls concurrently with pre-reserved ports
         results = await asyncio.gather(
