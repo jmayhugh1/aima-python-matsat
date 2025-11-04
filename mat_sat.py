@@ -11,9 +11,16 @@ import time
 import asyncio
 import uuid
 import shutil
-
+import socket
+import struct
+import random
+import threading
 
 QMAT_DIR = "qmat-mat-encodings"
+
+# Lock for port finding to avoid race conditions in concurrent scenarios
+_port_finding_lock = threading.Lock()
+
 # ---------- helpers: build instance matrices ----------
 
 
@@ -148,6 +155,129 @@ def mat_sat_cpp(formula: Expr) -> dict[Expr, bool] | None:
     return {expr(key): val for key, val in assignment.items()} if assignment else None
 
 
+def _find_consecutive_available_ports(
+    num_parties: int, start_port: int = 5001, max_attempts: int = 100
+) -> int:
+    """Find a range of consecutive available ports.
+
+    Uses a lock to serialize port finding in concurrent scenarios to avoid race conditions.
+
+    Args:
+        num_parties: Number of consecutive ports needed
+        start_port: Starting port number to search from
+        max_attempts: Maximum number of attempts to find ports
+
+    Returns:
+        Base port number where all consecutive ports are available
+
+    Raises:
+        RuntimeError: If no available port range found
+    """
+    # Use lock to serialize port finding and avoid race conditions
+    with _port_finding_lock:
+        # Add randomization to reduce conflicts between concurrent calls
+        # Use process ID, time, and random to make it more unique per call
+        random_offset = (
+            (os.getpid() % 1000)
+            + (int(time.time() * 1000) % 1000)
+            + random.randint(0, 999)
+        )
+
+        for attempt in range(max_attempts):
+            # Use large spacing (2000) and add randomization to avoid conflicts
+            # This ensures concurrent calls are very unlikely to pick the same range
+            test_port = start_port + (attempt * 2000) + (random_offset % 1000)
+            # Ensure we stay in reasonable port range (avoid system ports < 1024 and high ports)
+            test_port = max(5001, min(test_port, 65500 - num_parties))
+
+            sockets = []
+            try:
+                # Try to bind to all consecutive ports we need
+                for i in range(num_parties):
+                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+                    )
+                    try:
+                        s.bind(("127.0.0.1", test_port + i))
+                        sockets.append(s)
+                    except OSError:
+                        # Port not available, close all sockets and try next base port
+                        for sock in sockets:
+                            sock.close()
+                        sockets = []
+                        break
+
+                # If we successfully bound to all ports, we found our range
+                if len(sockets) == num_parties:
+                    port = test_port
+                    # Close all the test sockets
+                    for s in sockets:
+                        s.close()
+                    # Small delay to ensure ports are fully released
+                    time.sleep(0.05)
+                    return port
+            except Exception:
+                # Clean up any remaining sockets
+                for s in sockets:
+                    try:
+                        s.close()
+                    except:
+                        pass
+
+        raise RuntimeError(
+            f"Could not find {num_parties} consecutive available ports after {max_attempts} attempts"
+        )
+
+
+def _parse_is_solved_from_output(output: str) -> bool:
+    """Parse is_solved value from MP-SPDZ output.
+
+    Args:
+        output: Combined stdout and stderr from MP-SPDZ execution
+
+    Returns:
+        True if is_solved = 1, False if is_solved = 0
+
+    Raises:
+        RuntimeError: If is_solved value not found in output
+    """
+    match = re.search(
+        r"\[party\s+\d+\]\s+is_solved\s*=\s*(\d+)|is_solved\s*=\s*(\d+)", output
+    )
+    if match:
+        is_solved_value = int(match.group(1) or match.group(2))
+        return bool(is_solved_value)
+    raise RuntimeError(f"Could not find is_solved value in output: {output}")
+
+
+def _validate_mpspdz_paths(
+    qmat_dir: str,
+) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+    """Validate MP-SPDZ paths and return resolved paths.
+
+    Args:
+        qmat_dir: Directory containing q matrices
+
+    Returns:
+        Tuple of (mp_spdz_dir, qmat_path, run_script_path)
+
+    Raises:
+        FileNotFoundError: If required paths don't exist
+    """
+    mp_spdz_dir = pathlib.Path("MP-SPDZ").resolve()
+    run_script = mp_spdz_dir / "run-parties-proc.py"
+    qmat_path = pathlib.Path(qmat_dir).resolve()
+
+    if not run_script.exists():
+        raise FileNotFoundError(f"run-parties-proc.py not found: {run_script}")
+    if not qmat_path.exists():
+        raise FileNotFoundError(f"QMAT directory not found: {qmat_path}")
+
+    return mp_spdz_dir, qmat_path, run_script
+
+
 def compile_mpspdz(qmat_dir: str = QMAT_DIR) -> None:
     """Compiles the MP-SPDZ program"""
     mp_spdz_dir = pathlib.Path("MP-SPDZ").resolve()
@@ -185,14 +315,7 @@ def run_mpspdz(
 
     Returns True if is_solved = 1, False if is_solved = 0.
     """
-    mp_spdz_dir = pathlib.Path("MP-SPDZ").resolve()
-    run_script = mp_spdz_dir / "run-parties-proc.py"
-    qmat_path = pathlib.Path(qmat_dir).resolve()
-
-    if not run_script.exists():
-        raise FileNotFoundError(f"run-parties-proc.py not found: {run_script}")
-    if not qmat_path.exists():
-        raise FileNotFoundError(f"QMAT directory not found: {qmat_path}")
+    mp_spdz_dir, qmat_path, run_script = _validate_mpspdz_paths(qmat_dir)
 
     # Run the script - it will start all parties and wait for them
     try:
@@ -211,19 +334,9 @@ def run_mpspdz(
         )
 
     # Parse output for is_solved
-    # run-parties-proc.py outputs: [party X] is_solved = Y
     output = result.stdout + result.stderr
 
-    # Look for is_solved pattern in the output (handles both formats)
-    # Match "[party X] is_solved = Y" or just "is_solved = Y"
-    match = re.search(
-        r"\[party\s+\d+\]\s+is_solved\s*=\s*(\d+)|is_solved\s*=\s*(\d+)", output
-    )
-    if match:
-        is_solved_value = int(match.group(1) or match.group(2))
-        return bool(is_solved_value)
-
-    # If not found, check if there were errors
+    # Check for errors first
     if result.returncode != 0:
         raise RuntimeError(
             f"MP-SPDZ execution failed with return code {result.returncode}.\n"
@@ -231,12 +344,16 @@ def run_mpspdz(
             f"Stdout: {result.stdout}"
         )
 
-    # If we get here, we couldn't find is_solved in the output
-    raise RuntimeError(
-        f"Could not find is_solved value in output.\n"
-        f"Stdout: {result.stdout}\n"
-        f"Stderr: {result.stderr}"
-    )
+    # Parse is_solved from output
+    try:
+        return _parse_is_solved_from_output(output)
+    except RuntimeError:
+        # Re-raise with more context
+        raise RuntimeError(
+            f"Could not find is_solved value in output.\n"
+            f"Stdout: {result.stdout}\n"
+            f"Stderr: {result.stderr}"
+        )
 
 
 def mat_sat_mpspdz(formulas: List[Expr]) -> dict[Expr, bool] | None:
@@ -361,24 +478,26 @@ async def run_mpspdz_async(
     qmat_dir: str = QMAT_DIR,
     protocol: str = "mascot",
     timeout: int = 300,
-    port: int = 5001,
+    port: int | None = None,
 ) -> bool:
     """Async version of run_mpspdz.
+
+    Automatically finds an available port to avoid conflicts with concurrent calls.
 
     Args:
         qmat_dir: Directory containing q matrices
         protocol: MP-SPDZ protocol to use
         timeout: Timeout in seconds
-        port: Base port number for MP-SPDZ parties (default: 5001)
     """
-    mp_spdz_dir = pathlib.Path("MP-SPDZ").resolve()
-    run_script = mp_spdz_dir / "run-parties-proc.py"
-    qmat_path = pathlib.Path(qmat_dir).resolve()
+    mp_spdz_dir, qmat_path, run_script = _validate_mpspdz_paths(qmat_dir)
 
-    if not run_script.exists():
-        raise FileNotFoundError(f"run-parties-proc.py not found: {run_script}")
-    if not qmat_path.exists():
-        raise FileNotFoundError(f"QMAT directory not found: {qmat_path}")
+    # Count the number of parties (qmat files) to determine how many ports we need
+    qmat_files = sorted(qmat_path.glob("q*.qmat"))
+    num_parties = len(qmat_files)
+
+    # Use provided port or find one dynamically
+    if port is None:
+        port = _find_consecutive_available_ports(num_parties)
 
     # Run the script - it will start all parties and wait for them
     try:
@@ -404,15 +523,7 @@ async def run_mpspdz_async(
     # Parse output for is_solved
     output = (stdout + stderr).decode()
 
-    # Look for is_solved pattern in the output
-    match = re.search(
-        r"\[party\s+\d+\]\s+is_solved\s*=\s*(\d+)|is_solved\s*=\s*(\d+)", output
-    )
-    if match:
-        is_solved_value = int(match.group(1) or match.group(2))
-        return bool(is_solved_value)
-
-    # If not found, check if there were errors
+    # Check for errors first
     if process.returncode != 0:
         raise RuntimeError(
             f"MP-SPDZ execution failed with return code {process.returncode}.\n"
@@ -420,11 +531,133 @@ async def run_mpspdz_async(
             f"Stdout: {stdout.decode()}"
         )
 
-    # If we get here, we couldn't find is_solved in the output
+    # Parse is_solved from output
+    try:
+        return _parse_is_solved_from_output(output)
+    except RuntimeError:
+        # Re-raise with more context
+        raise RuntimeError(
+            f"Could not find is_solved value in output.\n"
+            f"Stdout: {stdout.decode()}\n"
+            f"Stderr: {stderr.decode()}"
+        )
+
+
+def _count_parties_for_formulas(formulas: List[Expr]) -> int:
+    """Count the number of parties needed for a list of formulas.
+
+    Each formula becomes one party in MP-SPDZ, so the number of parties
+    is simply the number of formulas.
+
+    Args:
+        formulas: List of formulas
+
+    Returns:
+        Number of parties needed
+    """
+    return len(formulas) if formulas else 0
+
+
+async def reserve_ports_for_formula_sets(
+    formula_sets: List[List[Expr]], start_port: int = 5001
+) -> List[int]:
+    """Reserve ports upfront for multiple formula sets.
+
+    This function calculates how many parties each formula set needs,
+    then reserves consecutive port ranges for all of them. This avoids
+    race conditions when running concurrent calls.
+
+    Args:
+        formula_sets: List of formula sets, where each set is a list of formulas
+        start_port: Starting port number to search from
+
+    Returns:
+        List of base ports, one for each formula set
+    """
+    # Calculate number of parties needed for each formula set
+    num_parties_list = [
+        _count_parties_for_formulas(formulas) for formulas in formula_sets
+    ]
+
+    # Reserve all port ranges upfront using the lock
+    reserved_ports = []
+    current_base_port = start_port
+
+    with _port_finding_lock:
+        for num_parties in num_parties_list:
+            if num_parties == 0:
+                reserved_ports.append(None)
+                continue
+
+            # Find consecutive ports for this formula set
+            port = _find_consecutive_available_ports_unlocked(
+                num_parties, current_base_port
+            )
+            reserved_ports.append(port)
+            # Move to next potential port range (add large spacing to avoid conflicts)
+            current_base_port = port + num_parties + 1000
+
+    return reserved_ports
+
+
+def _find_consecutive_available_ports_unlocked(
+    num_parties: int, start_port: int = 5001, max_attempts: int = 100
+) -> int:
+    """Find consecutive available ports without using the lock.
+
+    This is used internally when we already have the lock from reserve_ports_for_formula_sets.
+
+    Args:
+        num_parties: Number of consecutive ports needed
+        start_port: Starting port number to search from
+        max_attempts: Maximum number of attempts to find ports
+
+    Returns:
+        Base port number where all consecutive ports are available
+    """
+    for attempt in range(max_attempts):
+        test_port = start_port + (attempt * 100)
+        # Ensure we stay in reasonable port range
+        test_port = max(5001, min(test_port, 65500 - num_parties))
+
+        sockets = []
+        try:
+            # Try to bind to all consecutive ports we need
+            for i in range(num_parties):
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.setsockopt(
+                    socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)
+                )
+                try:
+                    s.bind(("127.0.0.1", test_port + i))
+                    sockets.append(s)
+                except OSError:
+                    # Port not available, close all sockets and try next base port
+                    for sock in sockets:
+                        sock.close()
+                    sockets = []
+                    break
+
+            # If we successfully bound to all ports, we found our range
+            if len(sockets) == num_parties:
+                port = test_port
+                # Keep sockets open - don't close them yet, we'll release when done
+                # Store them for later cleanup
+                for s in sockets:
+                    s.close()
+                time.sleep(0.01)
+                return port
+        except Exception:
+            # Clean up any remaining sockets
+            for s in sockets:
+                try:
+                    s.close()
+                except:
+                    pass
+
     raise RuntimeError(
-        f"Could not find is_solved value in output.\n"
-        f"Stdout: {stdout.decode()}\n"
-        f"Stderr: {stderr.decode()}"
+        f"Could not find {num_parties} consecutive available ports after {max_attempts} attempts"
     )
 
 
@@ -434,12 +667,14 @@ async def mat_sat_mpspdz_async(
     """Async version of mat_sat_mpspdz that uses a temporary subfolder for each call.
 
     Creates a unique subfolder within base_qmat_dir, writes q matrices there,
-    runs MP-SPDZ, and then cleans up the subfolder.
+    runs MP-SPDZ, and then cleans up the subfolder. Automatically finds
+    an available port to avoid conflicts with concurrent calls, unless a port
+    is provided (e.g., from reserve_ports_for_formula_sets).
 
     Args:
         formulas: List of formulas to solve
         base_qmat_dir: Base directory for q matrices (default: QMAT_DIR)
-        port: Base port number for MP-SPDZ parties. If None, uses a port derived from UUID.
+        port: Optional pre-reserved base port. If None, finds one automatically.
 
     Returns:
         A dict mapping symbols to bool values if satisfiable, None if unsatisfiable.
@@ -490,11 +725,6 @@ async def mat_sat_mpspdz_async(
     temp_qmat_dir = base_path / unique_id
     temp_qmat_dir.mkdir(exist_ok=True)
 
-    # If port not provided, derive one from the UUID to avoid conflicts
-    if port is None:
-        # Use hash of UUID to get a port in range 5001-5999
-        port = 5001 + (hash(unique_id) % 999)
-
     try:
         # Write matrices to the temporary subfolder as integers
         for i, q_matrix in enumerate(Q_matrices):
@@ -506,6 +736,7 @@ async def mat_sat_mpspdz_async(
         await compile_mpspdz_async(str(temp_qmat_dir))
 
         # Run the MP-SPDZ program and get is_solved result
+        # Use provided port or let it find one automatically
         is_solved = await run_mpspdz_async(str(temp_qmat_dir), port=port)
 
         if not is_solved:
