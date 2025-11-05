@@ -444,7 +444,7 @@ async def compile_mpspdz_async(qmat_dir: str) -> None:
 
     if num_parties < 1:
         raise ValueError(f"No qmat files found in {qmat_path}")
-    print(f"Number of parties: {num_parties}")
+    # print(f"Number of parties: {num_parties}")
 
     # Set PYTHONPATH if needed
     env = os.environ.copy()

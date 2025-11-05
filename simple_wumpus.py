@@ -347,6 +347,24 @@ class MultiAgentWumpusKBMatSatSecure(MultiAgentWumpusKB):
     private KB as a separate party.
     """
 
+    def __init__(
+        self,
+        dimrow: int,
+        agents_location: List[Tuple[int, int]] = [(1, 1)],
+        batch_size: int | None = None,
+    ):
+        """
+        Initialize the secure multi-party computation KB.
+
+        Args:
+            dimrow: Dimension of the wumpus world grid
+            agents_location: List of starting locations for each agent
+            batch_size: Default number of queries to process in each batch.
+                       If None, processes all queries at once (default behavior).
+        """
+        super().__init__(dimrow, agents_location)
+        self.batch_size = batch_size
+
     def _build_agent_formulas(self) -> List[Expr]:
         """Build formulas for MP-SPDZ where each agent contributes their private KB + public KB.
 
@@ -445,17 +463,22 @@ class MultiAgentWumpusKBMatSatSecure(MultiAgentWumpusKB):
         result = await mat_sat_mpspdz_async(formulas)
         return result is None
 
-    async def ask_if_true_batch_async(self, agent_id: int, queries: List[Expr]):
+    async def ask_if_true_batch_async(
+        self, agent_id: int, queries: List[Expr], batch_size: int | None = None
+    ):
         """
         Batch version that processes multiple queries concurrently.
 
-        This method collects all queries and processes them concurrently using
+        This method collects all queries and processes them in batches using
         the secure multi-party computation approach, reserving ports upfront
         to avoid race conditions.
 
         Args:
             agent_id: The agent making the queries
             queries: List of query expressions to check
+            batch_size: Number of queries to process in each batch. If None,
+                       uses the instance's batch_size attribute, or processes
+                       all queries at once if that is also None.
 
         Returns:
             List of boolean results, one for each query
@@ -471,37 +494,52 @@ class MultiAgentWumpusKBMatSatSecure(MultiAgentWumpusKB):
             formulas = self._build_query_formulas(query)
             all_formula_sets.append(formulas if formulas else [])
 
-        # Reserve ports upfront for all queries to avoid race conditions
-        valid_formula_sets = [fs for fs in all_formula_sets if fs]
-        if not valid_formula_sets:
-            return [False] * len(queries)
+        # Use instance batch_size if batch_size parameter is None
+        if batch_size is None:
+            batch_size = getattr(self, "batch_size", None)
 
-        reserved_ports = await reserve_ports_for_formula_sets(valid_formula_sets)
+        # If batch_size is None or 0, process all queries at once (original behavior)
+        if batch_size is None or batch_size <= 0:
+            batch_size = len(queries)
 
-        # Run all queries concurrently with pre-reserved ports
-        results = await asyncio.gather(
-            *[
-                mat_sat_mpspdz_async(formula_set, port=port)
-                for formula_set, port in zip(valid_formula_sets, reserved_ports)
-            ],
-            return_exceptions=True,
-        )
-
-        # Process results: None means unsatisfiable (KB entails query)
-        # Map results back to original query list
+        # Process queries in batches
         final_results = []
-        valid_idx = 0
-        for formula_set in all_formula_sets:
-            if formula_set:
-                # This query had a valid formula set
-                result = results[valid_idx]
-                final_results.append(
-                    result is None if not isinstance(result, Exception) else False
-                )
-                valid_idx += 1
-            else:
-                # This query had no valid formula set
-                final_results.append(False)
+        for batch_start in range(0, len(all_formula_sets), batch_size):
+            batch_end = min(batch_start + batch_size, len(all_formula_sets))
+            batch_formula_sets = all_formula_sets[batch_start:batch_end]
+
+            # Reserve ports upfront for this batch to avoid race conditions
+            valid_formula_sets = [fs for fs in batch_formula_sets if fs]
+            if not valid_formula_sets:
+                # All queries in this batch had no valid formula set
+                final_results.extend([False] * (batch_end - batch_start))
+                continue
+
+            reserved_ports = await reserve_ports_for_formula_sets(valid_formula_sets)
+
+            # Run all queries in this batch concurrently with pre-reserved ports
+            batch_results = await asyncio.gather(
+                *[
+                    mat_sat_mpspdz_async(formula_set, port=port)
+                    for formula_set, port in zip(valid_formula_sets, reserved_ports)
+                ],
+                return_exceptions=True,
+            )
+
+            # Process results: None means unsatisfiable (KB entails query)
+            # Map results back to original query list for this batch
+            valid_idx = 0
+            for formula_set in batch_formula_sets:
+                if formula_set:
+                    # This query had a valid formula set
+                    result = batch_results[valid_idx]
+                    final_results.append(
+                        result is None if not isinstance(result, Exception) else False
+                    )
+                    valid_idx += 1
+                else:
+                    # This query had no valid formula set
+                    final_results.append(False)
 
         return final_results
 
@@ -768,7 +806,7 @@ class MultiAgentHybridWumpusAgent(Agent):
                 for j in range(1, self.dimrow + 1):
                     if self.kb.ask_if_true(self.agent_id, ok_to_move(i, j)):
                         safe_points.append([i, j])
-
+        print("safe_points", safe_points)
         # check if we have glitter and can leave
         if self.kb.ask_if_true(self.agent_id, glitter(CurrX, CurrY)):
             goals = list()
