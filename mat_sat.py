@@ -252,6 +252,87 @@ def _parse_is_solved_from_output(output: str) -> bool:
     raise RuntimeError(f"Could not find is_solved value in output: {output}")
 
 
+def _parse_assignment_from_output(
+    output: str, symbols: Sequence[Expr] | None = None
+) -> dict[Expr, bool] | None:
+    # Matches lines like 'u[0] = 1' (possibly prefixed by party info)
+    assignments: dict[int, bool] = {}
+
+    for match in re.finditer(r"u\[(\d+)\]\s*=\s*(-?\d+)", output):
+        index = int(match.group(1))
+        value = bool(int(match.group(2)))
+        assignments[index] = value
+
+    if not assignments:
+        return None
+
+    if symbols:
+        expr_assignments: dict[Expr, bool] = {}
+        for idx, val in sorted(assignments.items()):
+            if idx < len(symbols):
+                expr_assignments[symbols[idx]] = val
+        return expr_assignments
+
+    # Fallback to placeholder variable names
+    return {expr(f"u{idx}"): val for idx, val in sorted(assignments.items())}
+
+
+def _write_qmat_files(
+    formulas: List[Expr], base_qmat_dir: str = QMAT_DIR, debug: bool = False
+) -> tuple[pathlib.Path | None, List[Expr]]:
+    if not formulas:
+        return None, []
+
+    all_symbols: set[Expr] = set()
+    for formula in formulas:
+        cnf = to_cnf(formula)
+        all_symbols.update(prop_symbols(cnf))
+
+    symbols = sorted(all_symbols, key=str)
+    if not symbols:
+        return None, []
+
+    symbol_index = {sym: idx for idx, sym in enumerate(symbols)}
+    total_vars = len(symbols)
+    if debug:
+        print(f"total_vars: {total_vars}")
+        print(f"symbols: {symbols}")
+        print(f"formulas: {formulas}")
+
+    q_matrices: List[np.ndarray] = []
+    for formula in formulas:
+        Q1, Q2, formula_syms = _build_Q1_Q2(formula)
+
+        Q1_full = np.zeros((Q1.shape[0], total_vars), dtype=np.float64)
+        Q2_full = np.zeros((Q2.shape[0], total_vars), dtype=np.float64)
+
+        for col_idx, sym in enumerate(formula_syms):
+            target_idx = symbol_index[sym]
+            Q1_full[:, target_idx] = Q1[:, col_idx]
+            Q2_full[:, target_idx] = Q2[:, col_idx]
+
+        q_matrix_row = np.concatenate((Q1_full, Q2_full), axis=1).astype(np.int32)
+        q_matrices.append(q_matrix_row)
+    if debug:
+        # concat all the rows into one np arrat
+        q_matrix_concat = np.concatenate(q_matrices, axis=0)
+        print(f"Q_matrix: {q_matrix_concat}")
+        print(f"size of Q_matrices: {q_matrix_concat.shape}")
+        
+        
+
+    base_path = pathlib.Path(base_qmat_dir)
+    base_path.mkdir(exist_ok=True)
+
+    temp_qmat_dir = base_path / str(uuid.uuid4())
+    temp_qmat_dir.mkdir(exist_ok=True)
+
+    for i, q_matrix in enumerate(q_matrices):
+        np.savetxt(temp_qmat_dir / f"q{i}.qmat", q_matrix, delimiter=" ", fmt="%d")
+
+    return temp_qmat_dir, symbols
+
+
 def _validate_mpspdz_paths(
     qmat_dir: str,
 ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
@@ -309,34 +390,49 @@ def compile_mpspdz(qmat_dir: str = QMAT_DIR) -> None:
 
 
 def run_mpspdz(
-    qmat_dir: str = QMAT_DIR, protocol: str = "mascot", timeout: int = 300
-) -> bool:
-    """Runs the MP-SPDZ program and parses is_solved from the output.
-
-    Returns True if is_solved = 1, False if is_solved = 0.
-    """
+    qmat_dir: str = QMAT_DIR,
+    protocol: str = "shamir",
+    timeout: int = 300,
+    port: int | None = None,
+    symbols: Sequence[Expr] | None = None,
+) -> dict[Expr, bool] | None:
     mp_spdz_dir, qmat_path, run_script = _validate_mpspdz_paths(qmat_dir)
 
-    # Run the script - it will start all parties and wait for them
+    qmat_files = sorted(qmat_path.glob("q*.qmat"))
+    num_parties = len(qmat_files)
+    if num_parties == 0:
+        raise ValueError(f"No qmat files found in {qmat_path}")
+
+    if port is None:
+        port = _find_consecutive_available_ports(num_parties)
+
+    cmd = [
+        "python3",
+        str(run_script),
+        str(qmat_path),
+        protocol,
+        "matsat",
+    ]
+    if port is not None:
+        cmd.extend(["--port", str(port)])
+
     try:
         result = subprocess.run(
-            ["python3", str(run_script), str(qmat_path), protocol, "matsat"],
+            cmd,
             cwd=str(mp_spdz_dir),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             timeout=timeout,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
             f"MP-SPDZ execution timed out after {timeout} seconds. "
             "The computation may still be running."
-        )
+        ) from exc
 
-    # Parse output for is_solved
     output = result.stdout + result.stderr
 
-    # Check for errors first
     if result.returncode != 0:
         raise RuntimeError(
             f"MP-SPDZ execution failed with return code {result.returncode}.\n"
@@ -344,203 +440,71 @@ def run_mpspdz(
             f"Stdout: {result.stdout}"
         )
 
-    # Parse is_solved from output
-    try:
-        return _parse_is_solved_from_output(output)
-    except RuntimeError:
-        # Re-raise with more context
-        raise RuntimeError(
-            f"Could not find is_solved value in output.\n"
-            f"Stdout: {result.stdout}\n"
-            f"Stderr: {result.stderr}"
-        )
+    is_solved = _parse_is_solved_from_output(output)
+    if not is_solved:
+        return None
+
+    assignment = _parse_assignment_from_output(output, symbols=symbols)
+    return assignment if assignment is not None else {}
 
 
-def mat_sat_mpspdz(formulas: List[Expr]) -> dict[Expr, bool] | None:
-    """Run MatSat using MP-SPDZ multi-party computation.
-
-    Returns a dict mapping symbols to bool values if satisfiable, None if unsatisfiable.
-    """
+def mat_sat_mpspdz(
+    formulas: List[Expr],
+    protocol: str = "shamir",
+    timeout: int = 300,
+    base_qmat_dir: str = QMAT_DIR,
+    port: int | None = None,
+    debug: bool = False,
+) -> dict[Expr, bool] | None:
     if not formulas:
         return None
 
-    # Collect all symbols from all formulas to ensure consistent dimensions
-    all_symbols = set()
-    for formula in formulas:
-        cnf = to_cnf(formula)
-        all_symbols.update(prop_symbols(cnf))
+    if protocol not in ["shamir", "mascot"]:
+        raise ValueError("Invalid protocol")
+    if protocol == "shamir" and len(formulas) < 3:
+        raise ValueError("Shamir protocol requires at least 3 formulas")
 
-    # Sort symbols for consistent ordering
-    syms = sorted(list(all_symbols), key=str)
-    n = len(syms)
+    temp_qmat_dir: pathlib.Path | None = None
+    symbols: List[Expr]
 
-    if n == 0:
-        return None
+    try:
+        temp_qmat_dir, symbols = _write_qmat_files(formulas, base_qmat_dir, debug)
+        if temp_qmat_dir is None:
+            return None
 
-    # Build matrices using consistent symbol set
-    Q_matrices = []
-    for formula in formulas:
-        Q1, Q2, formula_syms = _build_Q1_Q2(formula)
-        formula_n = len(formula_syms)
-
-        # Ensure Q1 and Q2 have n columns (pad with zeros for missing symbols)
-        if formula_n < n:
-            Q1_padded = np.zeros((Q1.shape[0], n), dtype=np.float64)
-            Q2_padded = np.zeros((Q2.shape[0], n), dtype=np.float64)
-            # Map formula symbols to full symbol set
-            for i, sym in enumerate(formula_syms):
-                j = syms.index(sym)
-                Q1_padded[:, j] = Q1[:, i]
-                Q2_padded[:, j] = Q2[:, i]
-            Q1, Q2 = Q1_padded, Q2_padded
-
-        # Append the q1 and q2 left to right (concatenate horizontally)
-        Q_matrix = np.concatenate((Q1, Q2), axis=1)
-        Q_matrices.append(Q_matrix)
-
-    # Ensure QMAT_DIR exists
-    qmat_path = pathlib.Path(QMAT_DIR)
-    qmat_path.mkdir(exist_ok=True)
-
-    # Write matrices to QMAT_DIR as integers
-    # get_dims() reads space-separated rows for dimension checking
-    # But sint.get_input_from() reads one integer per line during execution
-    # So we write as space-separated rows for get_dims(), and the input will be
-    # provided as one integer per line during execution
-    for i, q_matrix in enumerate(Q_matrices):
-        # Convert to integers and write as space-separated rows
-        q_matrix_int = q_matrix.astype(np.int32)
-        np.savetxt(f"{QMAT_DIR}/q{i}.qmat", q_matrix_int, delimiter=" ", fmt="%d")
-
-    # Compile the MP-SPDZ program
-    compile_mpspdz(QMAT_DIR)
-
-    # Run the MP-SPDZ program and get is_solved result
-    is_solved = run_mpspdz(QMAT_DIR)
-
-    if not is_solved:
-        return None  # UNSAT
-
-    # If SAT, we need to extract the assignment from the output
-    # For now, return an empty dict to indicate SAT but assignment not parsed
-    # TODO: Parse the u[i] values from output to get actual assignment
-    return {}
+        compile_mpspdz(str(temp_qmat_dir))
+        assignment = run_mpspdz(
+            qmat_dir=str(temp_qmat_dir),
+            protocol=protocol,
+            timeout=timeout,
+            port=port,
+            symbols=symbols,
+        )
+        return assignment
+    finally:
+        if temp_qmat_dir and temp_qmat_dir.exists():
+            shutil.rmtree(temp_qmat_dir)
 
 
 async def compile_mpspdz_async(qmat_dir: str) -> None:
-    """Async version of compile_mpspdz."""
-    mp_spdz_dir = pathlib.Path("MP-SPDZ").resolve()
-    script_path = mp_spdz_dir / "Programs" / "Source" / "multiparty_matsat.py"
-    qmat_path = pathlib.Path(qmat_dir).resolve()
-
-    if not script_path.exists():
-        raise FileNotFoundError(f"MP-SPDZ source not found: {script_path}")
-    if not qmat_path.exists():
-        raise FileNotFoundError(f"QMAT directory not found: {qmat_path}")
-
-    # Count the number of qmat files to determine number of parties
-    qmat_files = sorted(qmat_path.glob("q*.qmat"))
-    num_parties = len(qmat_files)
-
-    if num_parties < 1:
-        raise ValueError(f"No qmat files found in {qmat_path}")
-    # print(f"Number of parties: {num_parties}")
-
-    # Set PYTHONPATH if needed
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(mp_spdz_dir) + (":" + env.get("PYTHONPATH", ""))
-
-    # Set the number of parties in the environment if needed
-    # MP-SPDZ uses COMPILER_PARTIES environment variable or defaults to 2
-    env["COMPILER_PARTIES"] = str(num_parties)
-
-    # Use relative path when running from MP-SPDZ directory
-    script_rel_path = pathlib.Path("Programs") / "Source" / "multiparty_matsat.py"
-
-    process = await asyncio.create_subprocess_exec(
-        "python3",
-        str(script_rel_path),
-        "-d",
-        str(qmat_path),
-        cwd=str(mp_spdz_dir),
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    stdout, stderr = await process.communicate()
-
-    if process.returncode != 0:
-        raise RuntimeError(f"Compilation failed:\n{stderr.decode()}\n{stdout.decode()}")
+    await asyncio.to_thread(compile_mpspdz, qmat_dir)
 
 
 async def run_mpspdz_async(
     qmat_dir: str = QMAT_DIR,
-    protocol: str = "mascot",
+    protocol: str = "shamir",
     timeout: int = 300,
     port: int | None = None,
-) -> bool:
-    """Async version of run_mpspdz.
-
-    Automatically finds an available port to avoid conflicts with concurrent calls.
-
-    Args:
-        qmat_dir: Directory containing q matrices
-        protocol: MP-SPDZ protocol to use
-        timeout: Timeout in seconds
-    """
-    mp_spdz_dir, qmat_path, run_script = _validate_mpspdz_paths(qmat_dir)
-
-    # Count the number of parties (qmat files) to determine how many ports we need
-    qmat_files = sorted(qmat_path.glob("q*.qmat"))
-    num_parties = len(qmat_files)
-
-    # Use provided port or find one dynamically
-    if port is None:
-        port = _find_consecutive_available_ports(num_parties)
-
-    # Run the script - it will start all parties and wait for them
-    try:
-        process = await asyncio.create_subprocess_exec(
-            "python3",
-            str(run_script),
-            str(qmat_path),
-            protocol,
-            "matsat",
-            "--port",
-            str(port),
-            cwd=str(mp_spdz_dir),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        raise RuntimeError(
-            f"MP-SPDZ execution timed out after {timeout} seconds. "
-            "The computation may still be running."
-        )
-
-    # Parse output for is_solved
-    output = (stdout + stderr).decode()
-
-    # Check for errors first
-    if process.returncode != 0:
-        raise RuntimeError(
-            f"MP-SPDZ execution failed with return code {process.returncode}.\n"
-            f"Stderr: {stderr.decode()}\n"
-            f"Stdout: {stdout.decode()}"
-        )
-
-    # Parse is_solved from output
-    try:
-        return _parse_is_solved_from_output(output)
-    except RuntimeError:
-        # Re-raise with more context
-        raise RuntimeError(
-            f"Could not find is_solved value in output.\n"
-            f"Stdout: {stdout.decode()}\n"
-            f"Stderr: {stderr.decode()}"
-        )
+    symbols: Sequence[Expr] | None = None,
+) -> dict[Expr, bool] | None:
+    return await asyncio.to_thread(
+        run_mpspdz,
+        qmat_dir,
+        protocol,
+        timeout,
+        port,
+        symbols,
+    )
 
 
 def _count_parties_for_formulas(formulas: List[Expr]) -> int:
@@ -662,91 +626,17 @@ def _find_consecutive_available_ports_unlocked(
 
 
 async def mat_sat_mpspdz_async(
-    formulas: List[Expr], base_qmat_dir: str = QMAT_DIR, port: int | None = None
+    formulas: List[Expr],
+    base_qmat_dir: str = QMAT_DIR,
+    port: int | None = None,
+    timeout: int = 300,
+    protocol: str = "shamir",
 ) -> dict[Expr, bool] | None:
-    """Async version of mat_sat_mpspdz that uses a temporary subfolder for each call.
-
-    Creates a unique subfolder within base_qmat_dir, writes q matrices there,
-    runs MP-SPDZ, and then cleans up the subfolder. Automatically finds
-    an available port to avoid conflicts with concurrent calls, unless a port
-    is provided (e.g., from reserve_ports_for_formula_sets).
-
-    Args:
-        formulas: List of formulas to solve
-        base_qmat_dir: Base directory for q matrices (default: QMAT_DIR)
-        port: Optional pre-reserved base port. If None, finds one automatically.
-
-    Returns:
-        A dict mapping symbols to bool values if satisfiable, None if unsatisfiable.
-    """
-    if not formulas:
-        return None
-
-    # Collect all symbols from all formulas to ensure consistent dimensions
-    all_symbols = set()
-    for formula in formulas:
-        cnf = to_cnf(formula)
-        all_symbols.update(prop_symbols(cnf))
-
-    # Sort symbols for consistent ordering
-    syms = sorted(list(all_symbols), key=str)
-    n = len(syms)
-
-    if n == 0:
-        return None
-
-    # Build matrices using consistent symbol set
-    Q_matrices = []
-    for formula in formulas:
-        Q1, Q2, formula_syms = _build_Q1_Q2(formula)
-        formula_n = len(formula_syms)
-
-        # Ensure Q1 and Q2 have n columns (pad with zeros for missing symbols)
-        if formula_n < n:
-            Q1_padded = np.zeros((Q1.shape[0], n), dtype=np.float64)
-            Q2_padded = np.zeros((Q2.shape[0], n), dtype=np.float64)
-            # Map formula symbols to full symbol set
-            for i, sym in enumerate(formula_syms):
-                j = syms.index(sym)
-                Q1_padded[:, j] = Q1[:, i]
-                Q2_padded[:, j] = Q2[:, i]
-            Q1, Q2 = Q1_padded, Q2_padded
-
-        # Append the q1 and q2 left to right (concatenate horizontally)
-        Q_matrix = np.concatenate((Q1, Q2), axis=1)
-        Q_matrices.append(Q_matrix)
-
-    # Create a unique temporary subfolder for this call
-    base_path = pathlib.Path(base_qmat_dir)
-    base_path.mkdir(exist_ok=True)
-
-    # Create a unique subfolder using UUID
-    unique_id = str(uuid.uuid4())
-    temp_qmat_dir = base_path / unique_id
-    temp_qmat_dir.mkdir(exist_ok=True)
-
-    try:
-        # Write matrices to the temporary subfolder as integers
-        for i, q_matrix in enumerate(Q_matrices):
-            q_matrix_int = q_matrix.astype(np.int32)
-            qmat_file = temp_qmat_dir / f"q{i}.qmat"
-            np.savetxt(str(qmat_file), q_matrix_int, delimiter=" ", fmt="%d")
-
-        # Compile the MP-SPDZ program
-        await compile_mpspdz_async(str(temp_qmat_dir))
-
-        # Run the MP-SPDZ program and get is_solved result
-        # Use provided port or let it find one automatically
-        is_solved = await run_mpspdz_async(str(temp_qmat_dir), port=port)
-
-        if not is_solved:
-            return None  # UNSAT
-
-        # If SAT, we need to extract the assignment from the output
-        # For now, return an empty dict to indicate SAT but assignment not parsed
-        # TODO: Parse the u[i] values from output to get actual assignment
-        return {}
-    finally:
-        # Clean up the temporary subfolder
-        if temp_qmat_dir.exists():
-            shutil.rmtree(temp_qmat_dir)
+    return await asyncio.to_thread(
+        mat_sat_mpspdz,
+        formulas,
+        protocol,
+        timeout,
+        base_qmat_dir,
+        port,
+    )

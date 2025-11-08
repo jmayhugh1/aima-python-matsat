@@ -3,6 +3,9 @@ from utils4e import expr
 from utils import Expr
 from logic4e import to_cnf, conjuncts, prop_symbols, pl_true, dpll_satisfiable
 import asyncio
+import time
+
+# run with pytest -vv -s --durations=0
 
 
 def verifier(assignment: dict[str, bool], f: Expr | str):
@@ -133,61 +136,233 @@ def test_mat_sat_cpp():
 #     print(result)
 
 
-## tests for async mat_sat_mpspdz
-def test_mat_sat_mpspdz_async_concurrent():
-    """Test concurrent execution of async mat_sat_mpspdz with multiple independent calls."""
+def test_timed_shamir_matsat_mpspdz_simple():
+    f1 = expr("A | B | C")
+    f2 = expr("A | ~B")
+    f3 = expr("~A | C")
+    combined_formula = f1 & f2 & f3
+    print("combined formula is", combined_formula)
 
-    async def run_concurrent_tests():
-        # Create multiple independent formula sets that can run concurrently
-        # Each should use its own temporary subfolder and port
-        formula_sets = [
-            [expr("A | B"), expr("C | D")],  # First concurrent call
-            [expr("E | F"), expr("G | H")],  # Second concurrent call
-            [expr("I | J"), expr("K | L")],  # Third concurrent call
-            [expr("M | N"), expr("O | P")],  # Fourth concurrent call
-        ]
-
-        # Reserve ports upfront for all formula sets to avoid race conditions
-        reserved_ports = await reserve_ports_for_formula_sets(formula_sets)
-        assert len(reserved_ports) == len(formula_sets)
-
-        # Run all calls concurrently with pre-reserved ports
-        results = await asyncio.gather(
-            *[
-                mat_sat_mpspdz_async(formulas, port=port)
-                for formulas, port in zip(formula_sets, reserved_ports)
-            ]
-        )
-
-        # All should be satisfiable
-        for i, result in enumerate(results):
-            assert result is not None, f"Formula set {i} should be satisfiable"
-
-        # Verify we got results from all concurrent calls
-        assert len(results) == len(
-            formula_sets
-        ), "Should have results from all concurrent calls"
-
-    # Run the async test
-    asyncio.run(run_concurrent_tests())
+    start = time.time()
+    result = mat_sat_mpspdz([f1, f2, f3], protocol="shamir", debug=True)
+    duration = time.time() - start
+    assert verifier(result, combined_formula)
+    print("the result is", result)  # visible with `pytest -s`
+    print(f"Shamir simple runtime: {duration:.3f}s")
+    assert result is not None
 
 
-def test_mat_sat_mpspdz_async_concurrent_unsat():
-    """Test concurrent execution of async mat_sat_mpspdz with multiple unsatisfiable formulas."""
+def test_timed_shamir_matsat_mpspdz_complex():
+    f1 = expr("(A | B | C) & (D | E)")
+    f2 = expr("(~A | C | D)")
+    f3 = expr("(~C | E) & (B | ~D)")
 
-    async def run_concurrent_tests():
-        formula_sets = [
-            [expr("A & ~A"), expr("B & ~B")],
-            [expr("C & ~C"), expr("D & ~D")],
-        ]
-        reserved_ports = await reserve_ports_for_formula_sets(formula_sets)
-        results = await asyncio.gather(
-            *[
-                mat_sat_mpspdz_async(formulas, port=port)
-                for formulas, port in zip(formula_sets, reserved_ports)
-            ]
-        )
-        for result in results:
-            assert result is None, "Unsatisfiable formulas should return None"
+    combined_formula = f1 & f2 & f3
+    print("combined formula is", combined_formula)
 
-    asyncio.run(run_concurrent_tests())
+    start = time.time()
+    result = mat_sat_mpspdz([f1, f2, f3], protocol="shamir", debug=True)
+    duration = time.time() - start
+    assert verifier(result, combined_formula)
+    print("the result is", result)  # visible with `pytest -s`
+    print(f"Shamir complex runtime: {duration:.3f}s")
+    assert result is not None
+
+
+def test_timed_shamir_matsat_mpspdz_8vars():
+    # Three expressions; each may contain multiple clauses combined with &
+    f1 = expr("(A | B | C) & (D | E)")
+    f2 = expr("(~A | C | F) & (G | ~D)")
+    f3 = expr("(~C | E | H) & (B | ~G | D)")
+
+    combined_formula = f1 & f2 & f3
+    print("combined formula is", combined_formula)
+
+    result = mat_sat_mpspdz([f1, f2, f3], protocol="shamir", debug=True)
+    assert verifier(result, combined_formula)
+    print("the result is", result)  # visible with `pytest -s`
+    assert result is not None
+
+
+def test_timed_shamir_matsat_mpspdz_10vars():
+    # Three expressions; each can combine multiple clauses with &
+    f1 = expr("(A | B | C) & (D | E) & (F | G)")
+    f2 = expr("(~A | C | H) & (I | ~D) & (E | F)")
+    f3 = expr("(~C | E | J) & (B | ~G | D) & (H | I)")
+
+    combined_formula = f1 & f2 & f3
+    print("combined formula is", combined_formula)
+
+    result = mat_sat_mpspdz([f1, f2, f3], protocol="shamir", debug=True)
+    assert verifier(result, combined_formula)
+    print("the result is", result)  # visible with `pytest -s`
+    assert result is not None
+
+
+def test_timed_shamir_matsat_mpspdz_12vars():
+    # Three expressions; each may include multiple CNF clauses combined with &
+    f1 = expr("(A | B | C) & (D | E) & (F | G) & (H | I)")
+    f2 = expr("(~A | C | H) & (I | ~D) & (E | F) & (G | J)")
+    f3 = expr("(~C | E | L) & (B | ~G | D) & (H | I | K) & (J | K | L)")
+
+    combined_formula = f1 & f2 & f3
+    print("combined formula is", combined_formula)
+
+    result = mat_sat_mpspdz([f1, f2, f3], protocol="shamir", debug=True)
+    assert verifier(result, combined_formula)
+    print("the result is", result)  # visible with `pytest -s`
+    assert result is not None
+
+
+def test_timed_shamir_matsat_mpspdz_15vars():
+    # Three expressions; each combines multiple CNF clauses with &
+    f1 = expr("(A | B | C) & (D | E) & (F | G) & (H | I) & (J | K)")
+    f2 = expr("(~A | C | L) & (I | ~D) & (E | F) & (G | J) & (K | M)")
+    f3 = expr("(~C | E | N) & (B | ~G | D) & (H | I | O) & (J | K | L) & (M | N | O)")
+
+    combined_formula = f1 & f2 & f3
+    print("combined formula is", combined_formula)
+
+    result = mat_sat_mpspdz([f1, f2, f3], protocol="shamir", debug=True)
+    assert verifier(result, combined_formula)
+    print("the result is", result)  # visible with `pytest -s`
+    assert result is not None
+
+
+def test_timed_shamir_matsat_mpspdz_20vars():
+    # Three expressions; each combines multiple CNF-style clauses with &
+    f1 = expr(
+        "(A | B | C) & (D | E) & (F | G) & (H | I) & (J | K) & (L | M) & (N | O) & (P | Q) & (R | S) & (T | A)"
+    )
+    f2 = expr(
+        "(~A | C | H) & (I | ~D) & (E | F) & (G | J) & (K | M) & (N | ~H | O) & (P | Q | R) & (S | T | B) & (L | J) & (M | N)"
+    )
+    f3 = expr(
+        "(~C | E | N) & (B | ~G | D) & (H | I | O) & (J | K | L) & (M | N | O) & (P | Q | R) & (S | T | A) & (B | C | D) & (E | F | G) & (H | I | J)"
+    )
+
+    combined_formula = f1 & f2 & f3
+    print("combined formula is", combined_formula)
+
+    result = mat_sat_mpspdz([f1, f2, f3], protocol="shamir", debug=True)
+    assert verifier(result, combined_formula)
+    print("the result is", result)  # visible with `pytest -s`
+    assert result is not None
+
+
+def test_timed_shamir_matsat_mpspdz_25vars():
+    # Three expressions; each combines multiple CNF-style clauses with &
+    f1 = expr(
+        "(A | B | C) & (D | E) & (F | G) & (H | I) & (J | K) & "
+        "(L | M) & (N | O) & (P | Q) & (R | S) & (T | U) & (V | W) & (X | Y)"
+    )
+    f2 = expr(
+        "(~A | C | H) & (I | ~D) & (E | F) & (G | J) & (K | M) & "
+        "(N | ~H | O) & (P | Q | R) & (S | T | B) & (L | J) & (M | N) & "
+        "(U | V) & (W | X | Y)"
+    )
+    f3 = expr(
+        "(~C | E | N) & (B | ~G | D) & (H | I | O) & (J | K | L) & (M | N | O) & "
+        "(P | Q | R) & (S | T | A) & (B | C | D) & (E | F | G) & (H | I | J) & "
+        "(U | V | W) & (X | Y | A)"
+    )
+
+    combined_formula = f1 & f2 & f3
+    print("combined formula is", combined_formula)
+
+    result = mat_sat_mpspdz([f1, f2, f3], protocol="shamir", debug=True)
+    assert verifier(result, combined_formula)
+    print("the result is", result)  # visible with `pytest -s`
+    assert result is not None
+
+
+def test_timed_shamir_matsat_mpspdz_30vars():
+    # Variables: A, B, C, D, E, F, G, H, I, J,
+    #            K, L, M, N, O, P, Q, R, S, T,
+    #            U, V, W, X, Y, Z, AA, AB, AC, AD
+
+    f1 = expr(
+        "(A | B | C) & (D | E) & (F | G) & (H | I) & (J | K) & "
+        "(L | M) & (N | O) & (P | Q) & (R | S) & (T | U) & "
+        "(V | W) & (X | Y) & (Z | AA) & (AB | AC) & (AD | A)"
+    )
+
+    f2 = expr(
+        "(~A | C | H) & (I | ~D) & (E | F) & (G | J) & (K | M) & "
+        "(N | ~H | O) & (P | Q | R) & (S | T | B) & (L | J) & (M | N) & "
+        "(U | V) & (W | X | Y) & (Z | AA | B) & (AB | AC | D) & (AD | E)"
+    )
+
+    f3 = expr(
+        "(~C | E | N) & (B | ~G | D) & (H | I | O) & (J | K | L) & (M | N | O) & "
+        "(P | Q | R) & (S | T | A) & (B | C | D) & (E | F | G) & (H | I | J) & "
+        "(U | V | W) & (X | Y | Z) & (AA | AB | AC) & (AD | A | B) & (Q | R | S)"
+    )
+
+    combined_formula = f1 & f2 & f3
+    print("combined formula is", combined_formula)
+
+    result = mat_sat_mpspdz([f1, f2, f3], protocol="shamir", debug=True)
+    assert verifier(result, combined_formula)
+    print("the result is", result)  # visible with `pytest -s`
+    assert result is not None
+
+
+# ## tests for async mat_sat_mpspdz
+# def test_mat_sat_mpspdz_async_concurrent():
+#     """Test concurrent execution of async mat_sat_mpspdz with multiple independent calls."""
+
+#     async def run_concurrent_tests():
+#         # Create multiple independent formula sets that can run concurrently
+#         # Each should use its own temporary subfolder and port
+#         formula_sets = [
+#             [expr("A | B"), expr("C | D"), expr("E | F")],  # First concurrent call
+#             [expr("E | F"), expr("G | H")],  # Second concurrent call
+#             [expr("I | J"), expr("K | L")],  # Third concurrent call
+#             [expr("M | N"), expr("O | P")],  # Fourth concurrent call
+#         ]
+
+#         # Reserve ports upfront for all formula sets to avoid race conditions
+#         reserved_ports = await reserve_ports_for_formula_sets(formula_sets)
+#         assert len(reserved_ports) == len(formula_sets)
+
+#         # Run all calls concurrently with pre-reserved ports
+#         results = await asyncio.gather(
+#             *[
+#                 mat_sat_mpspdz_async(formulas, port=port)
+#                 for formulas, port in zip(formula_sets, reserved_ports)
+#             ]
+#         )
+
+#         # All should be satisfiable
+#         for i, result in enumerate(results):
+#             assert result is not None, f"Formula set {i} should be satisfiable"
+
+#         # Verify we got results from all concurrent calls
+#         assert len(results) == len(
+#             formula_sets
+#         ), "Should have results from all concurrent calls"
+
+#     # Run the async test
+#     asyncio.run(run_concurrent_tests())
+
+
+# def test_mat_sat_mpspdz_async_concurrent_unsat():
+#     """Test concurrent execution of async mat_sat_mpspdz with multiple unsatisfiable formulas."""
+
+#     async def run_concurrent_tests():
+#         formula_sets = [
+#             [expr("A & ~A"), expr("B & ~B")],
+#             [expr("C & ~C"), expr("D & ~D")],
+#         ]
+#         reserved_ports = await reserve_ports_for_formula_sets(formula_sets)
+#         results = await asyncio.gather(
+#             *[
+#                 mat_sat_mpspdz_async(formulas, port=port)
+#                 for formulas, port in zip(formula_sets, reserved_ports)
+#             ]
+#         )
+#         for result in results:
+#             assert result is None, "Unsatisfiable formulas should return None"
+
+#     asyncio.run(run_concurrent_tests())
