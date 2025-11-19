@@ -21,8 +21,8 @@ def main():
     print()
 
     # Setup multi-agent system with secure MatSat (MP-SPDZ)
-    dimensions = 6
-    agent_locations = [(1, 1), (3, 1)]
+    dimensions = 5
+    agent_locations = [(1, 1), (3, 1), (1, 3)]
     shared_kb = MultiAgentWumpusKBMatSatSecure(
         dimrow=dimensions, agents_location=agent_locations
     )
@@ -55,4 +55,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
