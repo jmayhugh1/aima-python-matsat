@@ -1243,8 +1243,8 @@ class WumpusTestEnvironment(WumpusEnvironment):
 
         # Place Gold (which creates Glitter) in the top-right interior corner
         # For a 4x4 world, reachable interior coordinates are (1,1) to (2,2), so top-right is (2,2)
-        wumpus_x, wumpus_y = (self.x_end - 1, self.y_end - 1)
-        self.add_thing(Wumpus(lambda x: ""), (wumpus_x, wumpus_y), True)
+        # wumpus_x, wumpus_y = (self.x_end - 1, self.y_end - 1)
+        # self.add_thing(Wumpus(lambda x: ""), (wumpus_x, wumpus_y), True)
         # add gold at (2,1)
         # self.add_thing(Gold(), (3, 1), True)
         # add pit at (2,2)
@@ -1285,24 +1285,27 @@ class MultiWumpusEnvironment(WumpusEnvironment):
         """Initialize the world with multiple agents"""
         # Add walls
         self.add_walls()
-
+        self.add_thing(Wumpus(lambda x: ""), (4, 3), True)
+        # self.add_thing(Gold(), (1, 2), True)
         # Add pits with lower probability for testing
         for x in range(self.x_start, self.x_end):
             for y in range(self.y_start, self.y_end):
                 # Skip agent starting locations
                 if (x, y) in self.agent_locations:
                     continue
-                if random.random() < self.pit_probability:
-                    self.add_thing(Pit(), (x, y), True)
+                # # 3 add pit at (3,3)
+                # if (x, y) == (3, 3):
+                #     self.add_thing(Pit(), (x, y), True)
 
-        # Add Wumpus (avoid agent starting locations)
-        exclude_locs = set(self.agent_locations)
-        w_x, w_y = self.random_location_inbounds(exclude=exclude_locs)
-        self.add_thing(Wumpus(lambda x: ""), (w_x, w_y), True)
 
-        # Add Gold (avoid agent starting locations)
-        gold_loc = self.random_location_inbounds(exclude=exclude_locs)
-        self.add_thing(Gold(), gold_loc, True)
+        # # Add Wumpus (avoid agent starting locations)
+        # exclude_locs = set(self.agent_locations)
+        # w_x, w_y = self.random_location_inbounds(exclude=exclude_locs)
+        # self.add_thing(Wumpus(lambda x: ""), (w_x, w_y), True)
+
+        # # Add Gold (avoid agent starting locations)
+        # gold_loc = self.random_location_inbounds(exclude=exclude_locs)
+        # self.add_thing(Gold(), gold_loc, True)
 
         # Add all agents
         for i, (agent, location) in enumerate(
@@ -1310,6 +1313,7 @@ class MultiWumpusEnvironment(WumpusEnvironment):
         ):
             explorer = Explorer(agent.program)
             explorer.direction = Direction("right")
+            explorer.multi_agent_id = i
             self.add_thing(explorer, location, True)
 
         if self.show:
@@ -1333,9 +1337,13 @@ class MultiWumpusEnvironment(WumpusEnvironment):
             explorer_agents = [
                 agent for agent in self.agents if isinstance(agent, Explorer)
             ]
+            explorer_agents.sort(key=lambda a: getattr(a, "multi_agent_id", 0))
 
             actions = []
-            for agent_id, agent in enumerate(explorer_agents):
+            for agent in explorer_agents:
+                agent_id = getattr(agent, "multi_agent_id", None)
+                if agent_id is None:
+                    continue
                 if agent.alive:
                     # Get percepts for THIS SPECIFIC agent ONLY (private percepts)
                     percepts = self.percept(agent)
@@ -1349,12 +1357,12 @@ class MultiWumpusEnvironment(WumpusEnvironment):
                     # Call agent.program with (agent_id, percepts) tuple
                     # The agent_id ensures percepts go to the correct private KB
                     action = agent.program((agent_id, percepts))
-                    actions.append(action)
+                    actions.append((agent_id, agent, action))
 
                     if self.show:
                         print(f"  Action chosen: {action}")
                 else:
-                    actions.append("")
+                    actions.append((agent_id, agent, ""))
                     if self.show:
                         print(f"\n--- Agent {agent_id} ---")
                         print(f"  Status: DEAD")
@@ -1365,7 +1373,7 @@ class MultiWumpusEnvironment(WumpusEnvironment):
                 print("EXECUTING ACTIONS:")
                 print("-" * 70)
 
-            for agent_id, (agent, action) in enumerate(zip(explorer_agents, actions)):
+            for agent_id, agent, action in actions:
                 if self.show and action:
                     print(f"Agent {agent_id}: {action} at {agent.location}")
                 self.execute_action(agent, action)
