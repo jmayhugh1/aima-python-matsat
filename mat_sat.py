@@ -143,7 +143,12 @@ def mat_sat(
     )
 
 
-def mat_sat_cpp(formula: Expr) -> dict[Expr, bool] | None:
+def mat_sat_cpp(formula: Expr, debug: bool = False) -> dict[Expr, bool] | None:
+    if debug:
+        q1, q2, syms = _build_Q1_Q2(formula)
+        # concat
+        q_matrix = np.concatenate((q1, q2), axis=1)
+        print(f"size of Q_matrix: {q_matrix.shape}")
     if type(formula) == Expr:
         formula = to_cnf(formula)
     if type(formula) != str:
@@ -296,8 +301,8 @@ def _write_qmat_files(
     total_vars = len(symbols)
     if debug:
         print(f"total_vars: {total_vars}")
-        print(f"symbols: {symbols}")
-        print(f"formulas: {formulas}")
+        # print(f"symbols: {symbols}")
+        # print(f"formulas: {formulas}")
 
     q_matrices: List[np.ndarray] = []
     for formula in formulas:
@@ -316,7 +321,7 @@ def _write_qmat_files(
     if debug:
         # concat all the rows into one np arrat
         q_matrix_concat = np.concatenate(q_matrices, axis=0)
-        print(f"Q_matrix: {q_matrix_concat}")
+        # print(f"Q_matrix: {q_matrix_concat}")
         print(f"size of Q_matrices: {q_matrix_concat.shape}")
         
         
