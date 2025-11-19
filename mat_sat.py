@@ -1,6 +1,12 @@
 from typing import *
 from utils4e import Expr, expr
-from logic4e import to_cnf, conjuncts, prop_symbols, dpll_satisfiable
+from logic4e import (
+    to_cnf,
+    conjuncts,
+    prop_symbols,
+    dpll_satisfiable,
+    get_all_ordered_symbols,
+)
 import numpy as np
 import cppimport
 import pathlib
@@ -24,11 +30,6 @@ _port_finding_lock = threading.Lock()
 # ---------- helpers: build instance matrices ----------
 
 
-def _symbols_order(formula: Expr) -> List[Expr]:
-    """Deterministic symbol order [x1, x2, ..., xn] (sorted by strng name)."""
-    cnf = to_cnf(formula)
-    return sorted(list(prop_symbols(cnf)), key=str)
-
 
 def _clause_literals(cl: Expr) -> List[Expr]:
     s = str(to_cnf(cl))
@@ -44,18 +45,18 @@ def _build_Q1_Q2(formula: Expr) -> Tuple[np.ndarray, np.ndarray, List[Expr]]:
     """
     cnf = to_cnf(formula)
     clauses = conjuncts(cnf)
-    syms = _symbols_order(cnf)
-    n, m = len(syms), len(clauses)
+    symbols = get_all_ordered_symbols(cnf)
+    n, m = len(symbols), len(clauses)
     Q1 = np.zeros((m, n), dtype=np.float64)
     Q2 = np.zeros((m, n), dtype=np.float64)
     for i, cl in enumerate(clauses):
         lits = _clause_literals(cl)
-        for j, s in enumerate(syms):
+        for j, s in enumerate(symbols):
             if s in lits:
                 Q1[i, j] = 1.0
             elif expr("~" + str(s)) in lits:
                 Q2[i, j] = 1.0
-    return Q1, Q2, syms
+    return Q1, Q2, symbols
 
 
 # ---------- core: MatSat solver returning a dict ----------
@@ -288,12 +289,7 @@ def _write_qmat_files(
     if not formulas:
         return None, []
 
-    all_symbols: set[Expr] = set()
-    for formula in formulas:
-        cnf = to_cnf(formula)
-        all_symbols.update(prop_symbols(cnf))
-
-    symbols = sorted(all_symbols, key=str)
+    symbols = get_all_ordered_symbols(formulas)
     if not symbols:
         return None, []
 
@@ -323,8 +319,6 @@ def _write_qmat_files(
         q_matrix_concat = np.concatenate(q_matrices, axis=0)
         # print(f"Q_matrix: {q_matrix_concat}")
         print(f"size of Q_matrices: {q_matrix_concat.shape}")
-        
-        
 
     base_path = pathlib.Path(base_qmat_dir)
     base_path.mkdir(exist_ok=True)

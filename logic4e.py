@@ -324,7 +324,7 @@ def parse_definite_clause(s):
 
 
 # Useful constant Exprs used in examples and code:
-A, B, C, D, E, F, G, P, Q, x, y, z = map(Expr, "ABCDEFGPQxyz")
+A, B, C, D, E, F, G, P, Q, X, Y, Z, x, y, z = map(Expr, "ABCDEFGPQXYZxyz")
 
 
 # ______________________________________________________________________________
@@ -360,7 +360,7 @@ def tt_check_all(kb, alpha, symbols, model):
         )
 
 
-def prop_symbols(x):
+def prop_symbols(x: Expr) -> set[Expr]:
     """Return the set of all propositional symbols in x."""
     if not isinstance(x, Expr):
         return set()
@@ -368,6 +368,22 @@ def prop_symbols(x):
         return {x}
     else:
         return {symbol for arg in x.args for symbol in prop_symbols(arg)}
+
+
+def get_all_ordered_symbols(formulas: Expr | list[Expr]) -> list[Expr] | None:
+    """given an expression or a list of expressions, return a list of all the propsitional
+    symbols in the expressions, sorted by their string representation"""
+    all_symbols: set[Expr] = set()
+    if isinstance(formulas, Expr):
+        formulas = [formulas]
+    for formula in formulas:
+        cnf = to_cnf(formula)
+        all_symbols.update(prop_symbols(cnf))
+
+    symbols = sorted(all_symbols, key=str)
+    if not symbols:
+        return None
+    return symbols
 
 
 def constant_symbols(x):

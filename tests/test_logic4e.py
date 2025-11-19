@@ -239,6 +239,15 @@ def test_prop_symbols():
     }
 
 
+def test_get_all_ordered_symbols():
+    assert get_all_ordered_symbols(expr("X & Y & Z | A")) == [A, X, Y, Z]
+    assert get_all_ordered_symbols(expr("(x & B(z)) ==> Farmer(y) | A")) == [
+        A,
+        expr("B(z)"),
+        expr("Farmer(y)"),
+    ]
+
+
 def test_constant_symbols():
     assert constant_symbols(expr("x & y & z | A")) == {A}
     assert constant_symbols(expr("(x & B(z)) & Father(John) ==> Farmer(y) | A")) == {
