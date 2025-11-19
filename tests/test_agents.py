@@ -2,10 +2,30 @@ import random
 
 import pytest
 
-from agents import (ReflexVacuumAgent, ModelBasedVacuumAgent, TrivialVacuumEnvironment, compare_agents,
-                    RandomVacuumAgent, TableDrivenVacuumAgent, TableDrivenAgentProgram, RandomAgentProgram,
-                    SimpleReflexAgentProgram, ModelBasedReflexAgentProgram, Wall, Gold, Explorer, Thing, Bump, Glitter,
-                    WumpusEnvironment, Pit, VacuumEnvironment, Dirt, Direction, Agent)
+from agents import (
+    ReflexVacuumAgent,
+    ModelBasedVacuumAgent,
+    TrivialVacuumEnvironment,
+    compare_agents,
+    RandomVacuumAgent,
+    TableDrivenVacuumAgent,
+    TableDrivenAgentProgram,
+    RandomAgentProgram,
+    SimpleReflexAgentProgram,
+    ModelBasedReflexAgentProgram,
+    Wall,
+    Gold,
+    Explorer,
+    Thing,
+    Bump,
+    Glitter,
+    Pit,
+    VacuumEnvironment,
+    Dirt,
+    Direction,
+    Agent,
+)
+from agents4e import WumpusEnvironment
 
 # random seed may affect the placement
 # of things in the environment which may
@@ -14,6 +34,7 @@ from agents import (ReflexVacuumAgent, ModelBasedVacuumAgent, TrivialVacuumEnvir
 # current changes in any stochastic method
 # function or variable.
 random.seed(9)
+
 
 def test_move_forward():
     d = Direction("up")
@@ -64,7 +85,7 @@ def test_add():
 
 def test_RandomAgentProgram():
     # create a list of all the actions a Vacuum cleaner can perform
-    list = ['Right', 'Left', 'Suck', 'NoOp']
+    list = ["Right", "Left", "Suck", "NoOp"]
     # create a program and then an object of the RandomAgentProgram
     program = RandomAgentProgram(list)
 
@@ -76,7 +97,7 @@ def test_RandomAgentProgram():
     # run the environment
     environment.run()
     # check final status of the environment
-    assert environment.status == {(1, 0): 'Clean', (0, 0): 'Clean'}
+    assert environment.status == {(1, 0): "Clean", (0, 0): "Clean"}
 
 
 def test_RandomVacuumAgent():
@@ -89,23 +110,25 @@ def test_RandomVacuumAgent():
     # run the environment
     environment.run()
     # check final status of the environment
-    assert environment.status == {(1, 0): 'Clean', (0, 0): 'Clean'}
+    assert environment.status == {(1, 0): "Clean", (0, 0): "Clean"}
 
 
 def test_TableDrivenAgent():
     random.seed(10)
     loc_A, loc_B = (0, 0), (1, 0)
     # table defining all the possible states of the agent
-    table = {((loc_A, 'Clean'),): 'Right',
-             ((loc_A, 'Dirty'),): 'Suck',
-             ((loc_B, 'Clean'),): 'Left',
-             ((loc_B, 'Dirty'),): 'Suck',
-             ((loc_A, 'Dirty'), (loc_A, 'Clean')): 'Right',
-             ((loc_A, 'Clean'), (loc_B, 'Dirty')): 'Suck',
-             ((loc_B, 'Clean'), (loc_A, 'Dirty')): 'Suck',
-             ((loc_B, 'Dirty'), (loc_B, 'Clean')): 'Left',
-             ((loc_A, 'Dirty'), (loc_A, 'Clean'), (loc_B, 'Dirty')): 'Suck',
-             ((loc_B, 'Dirty'), (loc_B, 'Clean'), (loc_A, 'Dirty')): 'Suck'}
+    table = {
+        ((loc_A, "Clean"),): "Right",
+        ((loc_A, "Dirty"),): "Suck",
+        ((loc_B, "Clean"),): "Left",
+        ((loc_B, "Dirty"),): "Suck",
+        ((loc_A, "Dirty"), (loc_A, "Clean")): "Right",
+        ((loc_A, "Clean"), (loc_B, "Dirty")): "Suck",
+        ((loc_B, "Clean"), (loc_A, "Dirty")): "Suck",
+        ((loc_B, "Dirty"), (loc_B, "Clean")): "Left",
+        ((loc_A, "Dirty"), (loc_A, "Clean"), (loc_B, "Dirty")): "Suck",
+        ((loc_B, "Dirty"), (loc_B, "Clean"), (loc_A, "Dirty")): "Suck",
+    }
 
     # create an program and then an object of the TableDrivenAgent
     program = TableDrivenAgentProgram(table)
@@ -113,19 +136,19 @@ def test_TableDrivenAgent():
     # create an object of TrivialVacuumEnvironment
     environment = TrivialVacuumEnvironment()
     # initializing some environment status
-    environment.status = {loc_A: 'Dirty', loc_B: 'Dirty'}
+    environment.status = {loc_A: "Dirty", loc_B: "Dirty"}
     # add agent to the environment
     environment.add_thing(agent)
 
     # run the environment by single step everytime to check how environment evolves using TableDrivenAgentProgram
     environment.run(steps=1)
-    assert environment.status == {(1, 0): 'Clean', (0, 0): 'Dirty'}
+    assert environment.status == {(1, 0): "Clean", (0, 0): "Dirty"}
 
     environment.run(steps=1)
-    assert environment.status == {(1, 0): 'Clean', (0, 0): 'Dirty'}
+    assert environment.status == {(1, 0): "Clean", (0, 0): "Dirty"}
 
     environment.run(steps=1)
-    assert environment.status == {(1, 0): 'Clean', (0, 0): 'Clean'}
+    assert environment.status == {(1, 0): "Clean", (0, 0): "Clean"}
 
 
 def test_ReflexVacuumAgent():
@@ -138,7 +161,7 @@ def test_ReflexVacuumAgent():
     # run the environment
     environment.run()
     # check final status of the environment
-    assert environment.status == {(1, 0): 'Clean', (0, 0): 'Clean'}
+    assert environment.status == {(1, 0): "Clean", (0, 0): "Clean"}
 
 
 def test_SimpleReflexAgentProgram():
@@ -155,8 +178,12 @@ def test_SimpleReflexAgentProgram():
     loc_B = (1, 0)
 
     # create rules for a two state Vacuum Environment
-    rules = [Rule((loc_A, "Dirty"), "Suck"), Rule((loc_A, "Clean"), "Right"),
-             Rule((loc_B, "Dirty"), "Suck"), Rule((loc_B, "Clean"), "Left")]
+    rules = [
+        Rule((loc_A, "Dirty"), "Suck"),
+        Rule((loc_A, "Clean"), "Right"),
+        Rule((loc_B, "Dirty"), "Suck"),
+        Rule((loc_B, "Clean"), "Left"),
+    ]
 
     def interpret_input(state):
         return state
@@ -171,7 +198,7 @@ def test_SimpleReflexAgentProgram():
     # run the environment
     environment.run()
     # check final status of the environment
-    assert environment.status == {(1, 0): 'Clean', (0, 0): 'Clean'}
+    assert environment.status == {(1, 0): "Clean", (0, 0): "Clean"}
 
 
 def test_ModelBasedReflexAgentProgram():
@@ -188,8 +215,12 @@ def test_ModelBasedReflexAgentProgram():
     loc_B = (1, 0)
 
     # create rules for a two-state Vacuum Environment
-    rules = [Rule((loc_A, "Dirty"), "Suck"), Rule((loc_A, "Clean"), "Right"),
-             Rule((loc_B, "Dirty"), "Suck"), Rule((loc_B, "Clean"), "Left")]
+    rules = [
+        Rule((loc_A, "Dirty"), "Suck"),
+        Rule((loc_A, "Clean"), "Right"),
+        Rule((loc_B, "Dirty"), "Suck"),
+        Rule((loc_B, "Clean"), "Left"),
+    ]
 
     def update_state(state, action, percept, model):
         return percept
@@ -204,7 +235,7 @@ def test_ModelBasedReflexAgentProgram():
     # run the environment
     environment.run()
     # check final status of the environment
-    assert environment.status == {(1, 0): 'Clean', (0, 0): 'Clean'}
+    assert environment.status == {(1, 0): "Clean", (0, 0): "Clean"}
 
 
 def test_ModelBasedVacuumAgent():
@@ -217,7 +248,7 @@ def test_ModelBasedVacuumAgent():
     # run the environment
     environment.run()
     # check final status of the environment
-    assert environment.status == {(1, 0): 'Clean', (0, 0): 'Clean'}
+    assert environment.status == {(1, 0): "Clean", (0, 0): "Clean"}
 
 
 def test_TableDrivenVacuumAgent():
@@ -230,7 +261,7 @@ def test_TableDrivenVacuumAgent():
     # run the environment
     environment.run()
     # check final status of the environment
-    assert environment.status == {(1, 0): 'Clean', (0, 0): 'Clean'}
+    assert environment.status == {(1, 0): "Clean", (0, 0): "Clean"}
 
 
 def test_compare_agents():
@@ -251,16 +282,24 @@ def test_compare_agents():
 
 
 def test_TableDrivenAgentProgram():
-    table = {(('foo', 1),): 'action1',
-             (('foo', 2),): 'action2',
-             (('bar', 1),): 'action3',
-             (('bar', 2),): 'action1',
-             (('foo', 1), ('foo', 1),): 'action2',
-             (('foo', 1), ('foo', 2),): 'action3'}
+    table = {
+        (("foo", 1),): "action1",
+        (("foo", 2),): "action2",
+        (("bar", 1),): "action3",
+        (("bar", 2),): "action1",
+        (
+            ("foo", 1),
+            ("foo", 1),
+        ): "action2",
+        (
+            ("foo", 1),
+            ("foo", 2),
+        ): "action3",
+    }
     agent_program = TableDrivenAgentProgram(table)
-    assert agent_program(('foo', 1)) == 'action1'
-    assert agent_program(('foo', 2)) == 'action3'
-    assert agent_program(('invalid percept',)) is None
+    assert agent_program(("foo", 1)) == "action1"
+    assert agent_program(("foo", 2)) == "action3"
+    assert agent_program(("invalid percept",)) is None
 
 
 def test_Agent():
@@ -313,7 +352,12 @@ def test_WumpusEnvironment():
     assert not any(map(lambda x: not isinstance(x, Thing), w.things))
 
     # check that gold and wumpus are not present on (1,1)
-    assert not any(map(lambda x: isinstance(x, Gold) or isinstance(x, WumpusEnvironment), w.list_things_at((1, 1))))
+    assert not any(
+        map(
+            lambda x: isinstance(x, Gold) or isinstance(x, WumpusEnvironment),
+            w.list_things_at((1, 1)),
+        )
+    )
 
     # check if w.get_world() segments objects correctly
     assert len(w.get_world()) == 6
@@ -353,6 +397,7 @@ def test_WumpusEnvironment():
 
 def test_WumpusEnvironmentActions():
     random.seed(9)
+
     def constant_prog(percept):
         return percept
 
@@ -365,19 +410,19 @@ def test_WumpusEnvironmentActions():
 
     agent.location = (1, 1)
     assert agent.direction.direction == "right"
-    w.execute_action(agent, 'TurnRight')
+    w.execute_action(agent, "TurnRight")
     assert agent.direction.direction == "down"
-    w.execute_action(agent, 'TurnLeft')
+    w.execute_action(agent, "TurnLeft")
     assert agent.direction.direction == "right"
-    w.execute_action(agent, 'Forward')
+    w.execute_action(agent, "Forward")
     assert agent.location == (2, 1)
 
     agent.location = gold.location
-    w.execute_action(agent, 'Grab')
+    w.execute_action(agent, "Grab")
     assert agent.holding == [gold]
 
     agent.location = (1, 1)
-    w.execute_action(agent, 'Climb')
+    w.execute_action(agent, "Climb")
     assert not any(map(lambda x: isinstance(x, Explorer), w.things))
 
     assert w.is_done()

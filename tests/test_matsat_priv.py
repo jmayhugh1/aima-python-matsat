@@ -1,3 +1,9 @@
+import pytest
+import sys
+import os
+
+# Add parent directory to path so we can import logic4e
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from mat_sat import *
 from utils4e import expr
 from utils import Expr
@@ -712,3 +718,6 @@ def test_mat_sat_mpspdz_sync_unsatisfiable():
 
     result = mat_sat_mpspdz(formula_set, protocol="shamir", debug=True)
     assert result is None or result is False
+
+if __name__ == "__main__":
+    pytest.main()

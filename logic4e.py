@@ -386,6 +386,20 @@ def get_all_ordered_symbols(formulas: Expr | list[Expr]) -> list[Expr] | None:
     return symbols
 
 
+def expressions_containing_symbols(
+    formulas: Expr | list[Expr], symbols: list[Expr]
+) -> list[Expr]:
+    """given a list of expressions and a list of symbols, return a list of expressions that only contain the symbols"""
+    if isinstance(formulas, Expr):
+        formulas = [formulas]
+    valid_forulas = []
+    for formula in formulas:
+        symbols_in_formula = prop_symbols(formula)
+        if symbols_in_formula.issubset(symbols):
+            valid_forulas.append(formula)
+    return valid_forulas
+
+
 def constant_symbols(x):
     """Return the set of all constant symbols in x."""
     if not isinstance(x, Expr):

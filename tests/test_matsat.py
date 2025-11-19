@@ -1,9 +1,14 @@
+import sys
+import os
+
+# Add parent directory to path so we can import logic4e
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from mat_sat import *
 from utils4e import expr
 from utils import Expr
 from logic4e import to_cnf, conjuncts, prop_symbols, pl_true, dpll_satisfiable
-
-# run with pytest -vv -s --durations=0
+import pytest
 
 
 def verifier(assignment: dict[str, bool], f: Expr | str):
@@ -129,3 +134,5 @@ def test_mat_sat_cpp():
 #     assert result is None
 #     assert not verifier(result, f)
 #     print(result)
+if __name__ == "__main__":
+    pytest.main()

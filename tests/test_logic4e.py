@@ -43,7 +43,7 @@ def test_is_prop_symbol():
     assert not is_prop_symbol("xt")
     assert is_prop_symbol("Txt")
     assert not is_prop_symbol("")
-    assert not is_prop_symbol("52")
+    assert not is_prop_symbol("52") 
 
 
 def test_variables():
@@ -245,6 +245,77 @@ def test_get_all_ordered_symbols():
         A,
         expr("B(z)"),
         expr("Farmer(y)"),
+    ]
+
+
+def test_expressions_containing_symbols():
+    # Test single formula that matches
+    assert expressions_containing_symbols(expr("A & B"), [A, B]) == [expr("A & B")]
+    assert expressions_containing_symbols(expr("A & B"), [A, B, C]) == [expr("A & B")]
+
+    # Test single formula that doesn't match
+    assert expressions_containing_symbols(expr("A & B"), [A]) == []
+    assert expressions_containing_symbols(expr("A & B & C"), [A, B]) == []
+
+    # Test multiple formulas with mixed results
+    formulas = [expr("A & B"), expr("B & C"), expr("A"), expr("C & D")]
+    assert expressions_containing_symbols(formulas, [A, B, C]) == [
+        expr("A & B"),
+        expr("B & C"),
+        expr("A"),
+    ]
+    assert expressions_containing_symbols(formulas, [A, B]) == [
+        expr("A & B"),
+        expr("A"),
+    ]
+    assert expressions_containing_symbols(formulas, [C, D]) == [expr("C & D")]
+
+    # Test formulas with predicates
+    pred_formulas = [
+        expr("B(z)"),
+        expr("Farmer(y)"),
+        expr("A & B(z)"),
+        expr("(x & B(z)) ==> Farmer(y)"),
+    ]
+    assert expressions_containing_symbols(
+        pred_formulas, [A, expr("B(z)"), expr("Farmer(y)")]
+    ) == [
+        expr("B(z)"),
+        expr("Farmer(y)"),
+        expr("A & B(z)"),
+        expr("(x & B(z)) ==> Farmer(y)"),
+    ]
+    assert expressions_containing_symbols(pred_formulas, [A, expr("B(z)")]) == [
+        expr("B(z)"),
+        expr("A & B(z)"),
+    ]
+
+    # Test with complex expressions
+    complex_formulas = [
+        expr("A | B | C"),
+        expr("A & B ==> C"),
+        expr("(A & B) | (C & D)"),
+        expr("A & ~B"),
+    ]
+    assert expressions_containing_symbols(complex_formulas, [A, B, C]) == [
+        expr("A | B | C"),
+        expr("A & B ==> C"),
+        expr("A & ~B"),
+    ]
+    assert (
+        expressions_containing_symbols(complex_formulas, [A, B, C, D])
+        == complex_formulas
+    )
+
+    # Test empty list
+    assert expressions_containing_symbols([], [A, B]) == []
+
+    # Test with single symbol expressions
+    assert expressions_containing_symbols(
+        [expr("A"), expr("B"), expr("C")], [A, B]
+    ) == [
+        expr("A"),
+        expr("B"),
     ]
 
 
