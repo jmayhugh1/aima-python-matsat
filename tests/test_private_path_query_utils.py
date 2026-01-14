@@ -68,11 +68,19 @@ async def _run_sat_test_helper(grids: List[Grid], path: Path, expected: bool):
 
 
 @pytest.mark.asyncio
-async def test_join_computation():
+async def test_join_computation_sat():
     grid_1 = Grid([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
     grid_2 = Grid([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
     path_1 = Path(start=(0, 0), moves=[(1, 0), (1, 0)])
     await _run_sat_test_helper([grid_1, grid_2], path_1, expected=True)
+
+
+@pytest.mark.asyncio
+async def test_join_computation_unsat():
+    grid_1 = Grid([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
+    grid_2 = Grid([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
+    path_1 = Path(start=(0, 0), moves=[(1, 0), (1, 0)])
+    await _run_sat_test_helper([grid_1, grid_2], path_1, expected=False)
 
 
 if __name__ == "__main__":
