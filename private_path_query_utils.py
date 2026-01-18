@@ -41,8 +41,6 @@ class Path:
         for dx, dy in self.moves:
             res += f"{dx}\n{dy}\n"
         return res
-
-
 class Grid:
     def __init__(self, grid=List[List[Spot]]):
         self.grid = grid
@@ -144,5 +142,7 @@ async def join_computation(
         return parse_output(stdout.decode())
     else:
         raise RuntimeError(f"Computation failed: {stderr.decode()}")
+    
+    async def join():
+        pass
 
-    return
