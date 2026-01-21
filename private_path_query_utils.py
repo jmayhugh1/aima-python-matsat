@@ -49,6 +49,7 @@ class Path:
         for dx, dy in self.moves:
             res += f"{dx}\n{dy}\n"
         return res
+
     def pretty_str(self):
         res = f"Start: {self.start}\nMoves:\n"
         for i, (dx, dy) in enumerate(self.moves):
@@ -123,7 +124,7 @@ async def join_computation(
     port: int,
     protocol: Protocol = Protocol.SHAMIR,
 ) -> bool:
-    """player join the compuation on its own thread, need an id for bob"""
+    """player join the computation on its own thread, need an id for bob"""
 
     if not input:
         raise ValueError("Either grid or path must be provided")
@@ -148,6 +149,7 @@ async def join_computation(
         stdin=asyncio.subprocess.PIPE,
         env={
             **os.environ,
+            "PYTHONPATH": "/Users/joshuamayhugh/Projects/aima-python/MP-SPDZ",
             "DYLD_LIBRARY_PATH": f"{spdz_root}:{os.environ.get('DYLD_LIBRARY_PATH','')}",
             "LD_LIBRARY_PATH": f"{spdz_root}:{os.environ.get('LD_LIBRARY_PATH','')}",
         },
