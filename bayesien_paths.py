@@ -27,14 +27,30 @@ class BayesMap:
 
     eps = 1e-12
 
-    def __init__(self, size: int, p_init: float = 0.2, map=None):
+    def __init__(self, size: int = None, p_init: float = 0.2, map=None):
+        if map is not None:
+            if size is not None:
+                assert len(map) == size, "Provided size does not match the map size"
+            size = len(map)
+            # Convert probability values to log-odds
+            map = [
+                [
+                    BayesMap.probability_to_log_odds(map[i][j])
+                    for j in range(len(map[i]))
+                ]
+                for i in range(len(map))
+            ]
+        else:
+            assert size is not None, "Either size or map must be provided"
+
         self.size = size
         self.p_init = p_init
         self.map = (
             map
             if map is not None
             else [
-                [log(p_init / (1 - p_init)) for _ in range(size)] for _ in range(size)
+                [BayesMap.probability_to_log_odds(p_init) for _ in range(size)]
+                for _ in range(size)
             ]
         )  # size x size grid
 
@@ -66,7 +82,7 @@ class BayesMap:
     def find_highest_entropy_path(self, length: int) -> Tuple[Path, Tuple[int, int]]:
         max_entropy = float("-inf")
         max_entropy_path = None
-        max_entropy_path_start = (-1,-1)
+        max_entropy_path_start = (-1, -1)
         for x in range(self.size):
             for y in range(self.size):
                 score, path = self._find_highest_entropy_path((x, y), length)
@@ -192,9 +208,9 @@ class BayesMap:
 
         return string
 
-    def check_viable_path(self) -> bool:
-        # can we find a path with prob of hazard == 0.0 at each step?
-        start = (0, 0)
+    def check_viable_path(self, start=(0, 0), end=None) -> bool:
+        if end is None:
+            end = (self.size - 1, self.size - 1)
         # do bfs only selecting cells with prob of hazard == 0.0
         n = self.size
         queue = deque([start])
@@ -204,7 +220,7 @@ class BayesMap:
             if (x, y) in visited:
                 continue
             visited.add((x, y))
-            if (x, y) == (n - 1, n - 1):
+            if (x, y) == end:
                 return True
             for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
                 nx, ny = x + dx, y + dy
@@ -215,8 +231,9 @@ class BayesMap:
                         if isfinite(lo)
                         else (1.0 if lo > 0 else 0.0)
                     )
-                    if p == 0.0 and (nx, ny) not in visited:
+                    if p <= self.eps and (nx, ny) not in visited:
                         queue.append((nx, ny))
+
         return False
 
 
