@@ -4,17 +4,28 @@ from pathlib import Path
 import subprocess
 import asyncio
 from enum import Enum
+import sys
 
-# Set the PYTHONPATH environment variable
-spdz_root = os.path.abspath("./MP-SPDZ")
-os.environ["PYTHONPATH"] = "./MP-SPDZ"
+# Resolve paths relative to THIS file, not the CWD
+_THIS_DIR = Path(__file__).resolve().parent
+_SPDZ_ROOT = (_THIS_DIR / "MP-SPDZ").resolve()  # if MP-SPDZ is next to this file
+# If MP-SPDZ is one level up, use: (_THIS_DIR.parent / "MP-SPDZ").resolve()
+
+if not _SPDZ_ROOT.exists():
+    raise FileNotFoundError(f"MP-SPDZ not found at: {_SPDZ_ROOT}")
+
+# Make MP-SPDZ importable in this Python process *if needed*
+sys.path.insert(0, str(_SPDZ_ROOT))
+
+# Also set env for subprocesses
+os.environ["PYTHONPATH"] = str(_SPDZ_ROOT)
+
+spdz_root = str(_SPDZ_ROOT)
 
 program = "private_path_query"
-program_path = os.path.join(
-    os.environ["PYTHONPATH"], "Programs", "Source", f"{program}.py"
-)
-run_parties_path = os.path.join(os.environ["PYTHONPATH"], "run-parties.py")
-encodings_path = os.path.join("path-encodings")
+program_path = str(_SPDZ_ROOT / "Programs" / "Source" / f"{program}.py")
+run_parties_path = str(_SPDZ_ROOT / "run-parties.py")
+encodings_path = str((_THIS_DIR / "path-encodings").resolve())
 
 # ===============================================================================
 # TYPES AND ENUMS

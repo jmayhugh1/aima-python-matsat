@@ -3,6 +3,7 @@ from private_path_query_utils import (
     join_computation,
     Grid,
     Path,
+    Protocol,
 )
 from agents import Thing, Agent
 from logic4e import PropKB
@@ -10,6 +11,7 @@ from typing import List, Tuple
 from functools import lru_cache
 from math import isfinite, log, exp
 from collections import deque
+import asyncio
 
 
 # ===============================================================================
@@ -240,9 +242,10 @@ class BayesMap:
 class Bob:
     """contains knowledge of some portion of the map"""
 
-    def __init__(self, grid: Grid):
-        self.grid = grid
-        self.bayes_map = BayesMap(size=grid.dim, p_init=0.2)
+    def __init__(self, grid: Grid, p_init: float = 0.5):
+        self.grid = grid  # Ground truth map consists of zeros and ones only
+        self.bayes_map = BayesMap(size=grid.dim, p_init=0.5)  # belief map
+        self.grid_size = grid.dim
 
     pass
 
@@ -250,8 +253,69 @@ class Bob:
 class Alice:
     """wants to find a safe path through the map"""
 
-    def __init__(self, start: Tuple[int, int], path_length: int):
-        self.start = start
-        self.path_length = path_length
+    def __init__(
+        self,
+        start: Tuple[int, int],
+        goal: Tuple[int, int],
+        path_lengths: int,
+        grid_size: int,
+        p_init: float = 0.5,
+    ):
+        self.start = start  # the start location
+        self.goal = goal
+        self.path_length = (
+            path_lengths  # contains the consistent path lenfth for each query
+        )
+        self.grid_size = grid_size
+        self.p_init = p_init
+        self.bayes_map = BayesMap(size=grid_size, p_init=p_init)  # belief map
 
-    pass
+    async def run_computation(
+        self,
+        bobs: List[Bob],
+        iterations: int = 1,
+        protocol: Protocol = Protocol.SHAMIR,
+        base_port: int = 5001,
+    ) -> None:
+        assert len(bobs) > 0, "At least one Bob is required"
+        if protocol == Protocol.SHAMIR:
+            assert len(bobs) >= 2, "At least two bobs are required for Shamir protocol"
+        assert iterations > 0, "Number of iterations must be positive"
+
+        # make sure that Bob has the same grid size as Alice
+        for bob in bobs:
+            assert (
+                bob.grid_size == self.grid_size
+            ), "Bob's grid size must match Alice's grid size"
+
+        num_parties = len(bobs) + 1
+        ok = await compile_private_path_query(
+            num_parties, self.grid_size, self.path_length
+        )
+        assert ok, "SPDZ compile failed"
+
+        # gather highest entropy path
+        path, start = self.bayes_map.find_highest_entropy_path(self.path_length)
+
+        assert isinstance(path, Path), "Expected path to be of type Path"
+        assert isinstance(start, tuple), "Expected start to be of type Tuple[int, int]"
+
+        inputs = [path] + [bob.grid for bob in bobs]
+
+        results = await asyncio.gather(
+            *[
+                join_computation(
+                    id=i,
+                    num_parties=num_parties,
+                    input=inputs[i],
+                    port=base_port,
+                )
+                for i in range(num_parties)
+            ]
+        )
+        final_result = results[0]
+
+        # update everyones understanding of the map
+        for bob in bobs:
+            bob.bayes_map.update_probabilities(path, final_result)
+        self.bayes_map.update_probabilities(path, final_result)
