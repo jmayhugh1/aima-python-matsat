@@ -35,12 +35,27 @@ class Path:
             assert dx in (-1, 0, 1), "Move dx must be -1, 0, or 1"
             assert dy in (-1, 0, 1), "Move dy must be -1, 0, or 1"
 
+    def iter_path_cells(self, path: Path):
+        """Yield all (x,y) cells visited by the path, including the start."""
+        x, y = path.start
+        yield (x, y)
+        for dx, dy in path.moves:
+            x, y = x + dx, y + dy
+            yield (x, y)
+
     def __str__(self):
         res = ""
         res += f"{str(self.start[0])}\n{self.start[1]}\n"
         for dx, dy in self.moves:
             res += f"{dx}\n{dy}\n"
         return res
+    def pretty_str(self):
+        res = f"Start: {self.start}\nMoves:\n"
+        for i, (dx, dy) in enumerate(self.moves):
+            res += f"  Step {i+1}: ({dx}, {dy}) \n"
+        return res
+
+
 class Grid:
     def __init__(self, grid=List[List[Spot]]):
         self.grid = grid
@@ -142,7 +157,6 @@ async def join_computation(
         return parse_output(stdout.decode())
     else:
         raise RuntimeError(f"Computation failed: {stderr.decode()}")
-    
+
     async def join():
         pass
-
