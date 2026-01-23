@@ -5,6 +5,7 @@ from private_path_query_utils import (
     Path,
     Protocol,
 )
+from pprint import pprint
 from agents import Thing, Agent
 from logic4e import PropKB
 from typing import List, Tuple
@@ -58,7 +59,16 @@ class BayesMap:
 
     @staticmethod
     def log_odds_to_probability(log_odds: float) -> float:
-        return 1 / (1 + exp(-log_odds))
+        # stable sigmoid
+        if log_odds >= 0:
+            z = exp(-log_odds)
+            p = 1.0 / (1.0 + z)
+        else:
+            z = exp(log_odds)
+            p = z / (1.0 + z)
+
+        # clamp to avoid exactly 0/1 due to saturation
+        return min(1.0 - BayesMap.eps, max(BayesMap.eps, p))
 
     @staticmethod
     def probability_to_log_odds(p: float) -> float:
@@ -67,16 +77,15 @@ class BayesMap:
         return log(p / (1 - p))
 
     @staticmethod
-    def compute_entropy_map(log_odds_map: List[List[float]]) -> float:
+    def compute_entropy_map(log_odds_map: List[List[float]]) -> List[List[float]]:
         entropy_map = []
         for row in log_odds_map:
             entropy_row = []
             for log_odds in row:
                 p = BayesMap.log_odds_to_probability(log_odds)
-                if p == 0 or p == 1:
-                    entropy = 0
-                else:
-                    entropy = -(p * log(p) + (1 - p) * log(1 - p))
+                p = min(1.0 - BayesMap.eps, max(BayesMap.eps, p))
+
+                entropy = -(p * log(p) + (1 - p) * log(1 - p))
                 entropy_row.append(entropy)
             entropy_map.append(entropy_row)
         return entropy_map
@@ -175,6 +184,7 @@ class BayesMap:
         # Update each visited cell: p'_k = p_k / P(unsafe)
         for (x, y), p in zip(cells, ps):
             p_post = p / p_unsafe
+            p_post = min(1.0 - BayesMap.eps, max(BayesMap.eps, p_post))
             self.map[x][y] = self.probability_to_log_odds(p_post)
 
     def __str__(self):
@@ -243,8 +253,8 @@ class Bob:
     """contains knowledge of some portion of the map"""
 
     def __init__(self, grid: Grid, p_init: float = 0.5):
-        self.grid = grid  # Ground truth map consists of zeros and ones only
-        self.bayes_map = BayesMap(size=grid.dim, p_init=0.5)  # belief map
+        self.grid: Grid = grid  # Ground truth map consists of zeros and ones only
+        self.bayes_map: BayesMap = BayesMap(size=grid.dim, p_init=0.5)  # belief map
         self.grid_size = grid.dim
 
     pass
@@ -270,12 +280,51 @@ class Alice:
         self.p_init = p_init
         self.bayes_map = BayesMap(size=grid_size, p_init=p_init)  # belief map
 
+    @staticmethod
+    def show_path(bobs: List[Bob], path: Path) -> None:
+        """
+        Display the path on the true grid using colors:
+        - Gray  : unvisited cells
+        - Green : visited cells NOT overlapping a hazard
+        - Red   : visited cells overlapping a hazard
+        """
+
+        GRAY = "\033[90m"
+        RED = "\033[91m"
+        GREEN = "\033[92m"
+        RESET = "\033[0m"
+
+        dim = bobs[0].grid_size
+
+        # Collect all hazard cells from all Bobs
+        hazard_cells = set()
+        for bob in bobs:
+            for x in range(dim):
+                for y in range(dim):
+                    if bob.grid.grid[x][y] == 1:
+                        hazard_cells.add((x, y))
+
+        visited_cells = set(path.iter_path_cells(path))
+
+        for x in range(dim):
+            row = []
+            for y in range(dim):
+                if (x, y) in visited_cells:
+                    if (x, y) in hazard_cells:
+                        row.append(f"{RED}●{RESET}")
+                    else:
+                        row.append(f"{GREEN}●{RESET}")
+                else:
+                    row.append(f"{GRAY}.{RESET}")
+            print(" ".join(row))
+
     async def run_computation(
         self,
         bobs: List[Bob],
         iterations: int = 1,
         protocol: Protocol = Protocol.SHAMIR,
         base_port: int = 5001,
+        show_progress: bool = False,
     ) -> None:
         assert len(bobs) > 0, "At least one Bob is required"
         if protocol == Protocol.SHAMIR:
@@ -294,28 +343,52 @@ class Alice:
         )
         assert ok, "SPDZ compile failed"
 
-        # gather highest entropy path
-        path, start = self.bayes_map.find_highest_entropy_path(self.path_length)
+        if show_progress:
+            print("Initial belief map:")
+            print(self.bayes_map)
+            print("Starting Communication")
+            print(f"The start is {self.start}, the goal is {self.goal}")
 
-        assert isinstance(path, Path), "Expected path to be of type Path"
-        assert isinstance(start, tuple), "Expected start to be of type Tuple[int, int]"
+        for i in range(iterations):
 
-        inputs = [path] + [bob.grid for bob in bobs]
+            # gather highest entropy path
+            path, start = self.bayes_map.find_highest_entropy_path(self.path_length)
 
-        results = await asyncio.gather(
-            *[
-                join_computation(
-                    id=i,
-                    num_parties=num_parties,
-                    input=inputs[i],
-                    port=base_port,
-                )
-                for i in range(num_parties)
-            ]
-        )
-        final_result = results[0]
+            assert isinstance(path, Path), "Expected path to be of type Path"
+            assert isinstance(
+                start, tuple
+            ), "Expected start to be of type Tuple[int, int]"
 
-        # update everyones understanding of the map
-        for bob in bobs:
-            bob.bayes_map.update_probabilities(path, final_result)
-        self.bayes_map.update_probabilities(path, final_result)
+            if show_progress:
+                print(f"--- Iteration {i+1} ---")
+                print(f"Queried Path")
+                Alice.show_path(bobs, path)
+
+            inputs = [path] + [bob.grid for bob in bobs]
+
+            results = await asyncio.gather(
+                *[
+                    join_computation(
+                        id=i,
+                        num_parties=num_parties,
+                        input=inputs[i],
+                        port=base_port,
+                    )
+                    for i in range(num_parties)
+                ]
+            )
+            final_result = results[0]
+
+            # update everyones understanding of the map
+            for bob in bobs:
+                bob.bayes_map.update_probabilities(path, final_result)
+            self.bayes_map.update_probabilities(path, final_result)
+
+            if show_progress:
+                # print out updated belief map
+                print("Updated belief map:")
+                print(self.bayes_map)
+            if self.bayes_map.check_viable_path(self.start, self.goal):
+                if show_progress:
+                    print("A viable path exists!")
+                return True

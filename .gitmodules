@@ -1,3 +1,7 @@
 [submodule "aima-data"]
 	path = aima-data
 	url = https://github.com/aimacode/aima-data.git
+[submodule "MP-SPDZ"]
+	path = MP-SPDZ
+	url = https://github.com/jmayhugh1/MP-SPDZ.git
+	branch = adding-matsat-subproc
