@@ -160,7 +160,7 @@ async def join_computation(
         stdin=asyncio.subprocess.PIPE,
         env={
             **os.environ,
-            "PYTHONPATH": "/Users/joshuamayhugh/Projects/aima-python/MP-SPDZ",
+            "PYTHONPATH": str(_SPDZ_ROOT),
             "DYLD_LIBRARY_PATH": f"{spdz_root}:{os.environ.get('DYLD_LIBRARY_PATH','')}",
             "LD_LIBRARY_PATH": f"{spdz_root}:{os.environ.get('LD_LIBRARY_PATH','')}",
         },
