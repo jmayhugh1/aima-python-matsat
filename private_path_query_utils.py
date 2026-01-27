@@ -80,9 +80,8 @@ class Grid:
     def __str__(self):
         res = ""
         for row in self.grid:
-            for spot in row:
-                res += f"{spot}\n"
-        return res
+            res += " ".join(str(spot) for spot in row) + "\n"
+        return res.rstrip()  # Remove trailing newline
 
 
 # ==============================================================================

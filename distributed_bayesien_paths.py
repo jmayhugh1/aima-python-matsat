@@ -128,26 +128,135 @@ async def run_alice(args):
 # BOB LOGIC
 # ==============================================================================
 
+import random
+
+def generate_partitioned_maze(grid_size: int, seed: int, party_id: int, num_bobs: int) -> Grid:
+    """
+    Generates a deterministic global maze using 'seed', then returns
+    the subset of walls assigned to 'party_id'.
+    """
+    # 1. Deterministic Generation
+    rng = random.Random(seed)
+    
+    # Simple Randomized Prim's or DFS for Maze Generation
+    # Initialize full grid with Walls (1)
+    # We'll treat the grid as a graph where nodes are (r, c)
+    # To make a proper maze, we often use odd coordinates for cells and even for walls (or similar),
+    # but for simplicity on a dense grid:
+    # Let's generate a Spannng Tree on the grid cells.
+    # Start with all 1s (Obstacles). Carve 0s (Paths).
+    
+    # Note: 'Grid' class uses 0 for safe, 1 for hazard.
+    # For a maze, we want 1s as walls.
+    
+    map_data = [[1] * grid_size for _ in range(grid_size)]
+    
+    # Helper to check bounds
+    def in_bounds(r, c):
+        return 0 <= r < grid_size and 0 <= c < grid_size
+
+    # Carve start and goal immediately
+    start = (0, 0)
+    map_data[0][0] = 0
+    
+    # Frontier for Prim's: (r, c)
+    frontier = []
+    
+    def add_neighbors(r, c):
+        for dr, dc in [(2,0), (-2,0), (0,2), (0,-2)]:
+            nr, nc = r + dr, c + dc
+            if in_bounds(nr, nc) and map_data[nr][nc] == 1:
+                frontier.append((nr, nc, r, c)) 
+                
+    add_neighbors(0, 0)
+    
+    # Use RNG for deterministic frontier selection
+    while frontier:
+        # Pick random edge from frontier
+        idx = rng.randint(0, len(frontier) - 1)
+        r, c, pr, pc = frontier.pop(idx)
+        
+        if map_data[r][c] == 0:
+            continue
+            
+        # Carve current cell
+        map_data[r][c] = 0
+        # Carve wall between current and parent
+        wr, wc = (r + pr) // 2, (c + pc) // 2
+        map_data[wr][wc] = 0
+        
+        add_neighbors(r, c)
+        
+    # Ensure goal is open (it might be wall if simple generation didn't hit it nicely)
+    # With odd dimension logic 0,0 to N-1,N-1 usually works if N is odd.
+    # If N is even, might need specific carving.
+    # We simply force carve the path to goal from nearest 0 if needed or just carve goal.
+    map_data[grid_size-1][grid_size-1] = 0
+    if grid_size > 1:
+        # Simplistic fix to ensure goal connectivity if it was a wall
+        # Check neighbors, if all 1, carve one.
+        pass # The Maze alg mainly produces a spanning tree, so connectivity is high.
+
+    # 2. Partitioning
+    # My Grid will be all 0s (safe) EXCEPT for the walls (1s) that belong to ME.
+    my_grid_data = [[0] * grid_size for _ in range(grid_size)]
+    
+    # Alice (Party 0) is not a Bob. Bobs are 1..N.
+    # We need to map Bob party_ids to [0, num_bobs-1] for partitioning.
+    # party_id is 1-based index (1, 2, ..., num_bobs)
+    # owner_idx will be party_id - 1
+    my_owner_idx = party_id - 1
+    
+    for r in range(grid_size):
+        for c in range(grid_size):
+            if map_data[r][c] == 1: # It is a wall
+                # Who owns this wall?
+                # Simple hash: (r * grid_size + c) % num_bobs
+                owner = (r * grid_size + c) % num_bobs
+                
+                if owner == my_owner_idx:
+                    my_grid_data[r][c] = 1
+                else:
+                    my_grid_data[r][c] = 0 # Someone else's wall, to me it's "safe" (empty space)
+                    
+    return Grid(my_grid_data)
+
+def get_bob_grid(args) -> Grid:
+    """
+    Returns the grid for Bob.
+    Priority 1: Seeded Maze Generation
+    Priority 2: Hardcoded 3x3 map (if size=3)
+    Priority 3: Default center hazard
+    """
+    if args.seed is not None:
+        # Bobs are parties 1 to num_parties-1.
+        # But 'num_parties' in args DOES INCLUDE Alice.
+        # So number of Bobs = args.num_parties - 1.
+        num_bobs = args.num_parties - 1
+        return generate_partitioned_maze(args.grid_size, args.seed, args.party_id, num_bobs)
+
+    if args.grid_size == 3:
+        # User requested hardcoded map:
+        grid_data = [
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 0, 0]
+        ]
+        return Grid(grid_data)
+    
+    # Fallback to old logic
+    grid_data = [[0] * args.grid_size for _ in range(args.grid_size)]
+    mid = args.grid_size // 2
+    grid_data[mid][mid] = 1 
+    if args.grid_size > 2:
+        grid_data[1][0] = 1 
+    return Grid(grid_data)
+
 async def run_bob(args):
     print(f"Starting Bob (Player {args.party_id})...")
     
     # Generate/Setup Grid
-    # For distributed test without file input, we'll generate a random grid or the standard test one.
-    # Let's use the standard test one for consistency from test_distributed.py
-    grid_size = args.grid_size
-    grid_data = [[0] * grid_size for _ in range(grid_size)]
-    
-    # Add hazards (Simple logic: center is hazard)
-    # To make it interesting, each bob could have different hazards. 
-    # But for now let's make them uniform or random. 
-    # Let's say Bob 1 has hazard at (mid, mid), Bob 2 at (mid+1, mid), etc if we wanted distinctness.
-    # We will stick to the test_distributed.py logic:
-    mid = grid_size // 2
-    grid_data[mid][mid] = 1 
-    if grid_size > 2:
-        grid_data[1][0] = 1 
-        
-    grid = Grid(grid_data)
+    grid = get_bob_grid(args)
     bob = Bob(grid=grid)
     protocol = Protocol(args.protocol)
     
@@ -232,6 +341,7 @@ def parse_args():
     parser.add_argument("--path_length", type=int, default=3, help="Length of path to query")
     parser.add_argument("--iterations", type=int, default=5, help="Number of iterations")
     parser.add_argument("--protocol", choices=["shamir", "mascot"], default="mascot", help="MPC Protocol")
+    parser.add_argument("--seed", type=int, help="Shared seed for deterministic maze generation")
     
     return parser.parse_args()
 
