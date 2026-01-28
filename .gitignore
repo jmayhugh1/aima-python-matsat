@@ -78,3 +78,7 @@ target/
 # for macOS
 .DS_Store
 ._.DS_Store
+.vscode
+
+Programs/
+Player_Data/
