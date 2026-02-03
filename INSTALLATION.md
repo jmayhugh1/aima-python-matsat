@@ -10,6 +10,9 @@ This repository uses **git submodules**. Follow the steps below to clone the rep
 git clone --recurse-submodules https://github.com/jmayhugh1/aima-python-matsat
 cd aima-python-matsat
 pip install -r requirements.txt
+
+## important must do this to prepare ssl certs for MP-SPDZ, must call from outside of MP-SPDZ dir
+./MP-SPDZ/Scripts/setup-ssl.sh <number of parties, tests use 3>
 ```
 
 
