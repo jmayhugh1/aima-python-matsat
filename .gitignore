@@ -78,3 +78,9 @@ target/
 # for macOS
 .DS_Store
 ._.DS_Store
+
+settings.json
+Player-Data
+
+Programs/Bytecode
+Programs/Schedules
