@@ -80,7 +80,7 @@ target/
 ._.DS_Store
 
 settings.json
-Player-Data
-
 Programs/Bytecode
 Programs/Schedules
+Player_Data/
+.vscode

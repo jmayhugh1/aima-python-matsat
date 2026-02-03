@@ -36,8 +36,15 @@ EnvCanvas ## Canvas to display the environment of an EnvGUI
 
 from utils4e import distance_squared, turn_heading
 from statistics import mean
-from ipythonblocks import BlockGrid
-from IPython.display import HTML, display, clear_output
+try:
+    from ipythonblocks import BlockGrid
+    from IPython.display import HTML, display, clear_output
+except ImportError:
+    # Optional dependency for GUI
+    BlockGrid = None
+    HTML = None
+    display = None
+    clear_output = None
 from time import sleep
 
 import random
