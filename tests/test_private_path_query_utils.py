@@ -21,7 +21,7 @@ def test_to_str_path():
 def test_to_str_grid():
     grid_data = [[0, 1, 0], [1, 0, 1], [0, 0, 0]]
     grid = Grid(grid=grid_data)
-    assert str(grid) == "0\n1\n0\n1\n0\n1\n0\n0\n0\n"
+    assert str(grid) == "0 1 0\n1 0 1\n0 0 0"
 
 
 def test_parse_output():
