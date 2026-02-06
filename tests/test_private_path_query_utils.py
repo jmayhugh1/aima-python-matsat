@@ -273,11 +273,6 @@ async def test_join_computation_sat_2_iterations():
         moves=[(1, 0), (1, 0), (1, 0), (1, 0), (1, 0)],  # Moves down through safe area
     )
 
-    num_parties = len([grid_1, grid_2]) + 1
-    grid_size = 6
-    query_size = 5
-    base_port = 5001
-
     # First iteration: unsat path
     result_unsat = await _run_sat_test_helper(
         [grid_1, grid_2], path_unsat, iteration_no=0
