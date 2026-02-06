@@ -8,6 +8,7 @@ from private_path_query_utils import (
     Grid,
     Path,
     parse_output,
+    ComputationResult,
 )
 
 
@@ -25,11 +26,16 @@ def test_to_str_grid():
 
 
 def test_parse_output():
-    output_sat = "Some output...\nis_solved = 1\nMore output..."
-    output_unsat = "Some output...\nis_solved = 0\nMore output..."
+    output_sat = "Some output...\nis_solved= 1\ninformation_gain= 0.5\nMore output..."
+    output_unsat = "Some output...\nis_solved= 0\ninformation_gain= 0.0\nMore output..."
 
-    assert parse_output(output_sat) is True
-    assert parse_output(output_unsat) is False
+    result_unsat: ComputationResult = parse_output(output_unsat)
+    assert not result_unsat.is_solved
+    assert result_unsat.information_gain == 0.0
+
+    result_sat: ComputationResult = parse_output(output_sat)
+    assert result_sat.is_solved
+    assert result_sat.information_gain == 0.5
 
 
 def test_parse_output_invalid():
@@ -38,13 +44,23 @@ def test_parse_output_invalid():
         parse_output(output_invalid)
 
 
-async def _run_sat_test_helper(grids: List[Grid], path: Path, expected: bool):
+async def _run_sat_test_helper(
+    grids: List[Grid], path: Path, iteration_no: int = 0
+) -> ComputationResult:
+    """
+    Helper function to run a SAT test computation.
+
+    Returns:
+        ComputationResult with is_solved and information_gain
+    """
     num_parties = len(grids) + 1
     grid_size = len(grids[0].grid)
     query_size = len(path.moves)
     base_port = 5001
 
-    ok = await compile_private_path_query(num_parties, grid_size, query_size)
+    ok = await compile_private_path_query(
+        num_parties, grid_size, query_size, iteration_no
+    )
     assert ok, "SPDZ compile failed"
 
     inputs = [path] + grids
@@ -64,7 +80,7 @@ async def _run_sat_test_helper(grids: List[Grid], path: Path, expected: bool):
     results = await asyncio.gather(*tasks)
 
     final_result = results[0]  # assuming party 0 returns the SAT decision
-    assert final_result == expected
+    return final_result
 
 
 @pytest.mark.asyncio
@@ -72,7 +88,9 @@ async def test_join_computation_sat():
     grid_1 = Grid([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
     grid_2 = Grid([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
     path_1 = Path(start=(0, 0), moves=[(1, 0), (1, 0)])
-    await _run_sat_test_helper([grid_1, grid_2], path_1, expected=True)
+    result = await _run_sat_test_helper([grid_1, grid_2], path_1)
+    assert result.is_solved, "Path should be sat"
+    assert result.information_gain > 0, "Information gain should be positive"
 
 
 @pytest.mark.asyncio
@@ -80,7 +98,9 @@ async def test_join_computation_unsat():
     grid_1 = Grid([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
     grid_2 = Grid([[1, 1, 1], [1, 1, 1], [1, 1, 1]])
     path_1 = Path(start=(0, 0), moves=[(1, 0), (1, 0)])
-    await _run_sat_test_helper([grid_1, grid_2], path_1, expected=False)
+    result = await _run_sat_test_helper([grid_1, grid_2], path_1)
+    assert not result.is_solved, "Path should be unsat"
+    assert result.information_gain > 0, "Information gain should be positive"
 
 
 @pytest.mark.asyncio
@@ -111,7 +131,9 @@ async def test_join_computation_sat_5x5():
         moves=[(0, 1), (0, 1), (1, 0), (1, 0), (0, 1), (0, 1), (1, 0), (1, 0)],
     )
 
-    await _run_sat_test_helper([grid_1, grid_2], path_1, expected=True)
+    result = await _run_sat_test_helper([grid_1, grid_2], path_1)
+    assert result.is_solved, "Path should be sat"
+    assert result.information_gain > 0, "Information gain should be positive"
 
 
 @pytest.mark.asyncio
@@ -144,7 +166,9 @@ async def test_join_computation_sat_6x6():
         moves=[(1, 1), (0, 1), (0, 1), (1, 0), (1, 0), (0, 1), (0, 1), (1, 0), (1, 0)],
     )
 
-    await _run_sat_test_helper([grid_1, grid_2], path_1, expected=True)
+    result = await _run_sat_test_helper([grid_1, grid_2], path_1)
+    assert result.is_solved, "Path should be sat"
+    assert result.information_gain > 0, "Information gain should be positive"
 
 
 @pytest.mark.asyncio
@@ -192,7 +216,79 @@ async def test_join_computation_sat_7x7():
         ],
     )
 
-    await _run_sat_test_helper([grid_1, grid_2], path_1, expected=True)
+    result = await _run_sat_test_helper([grid_1, grid_2], path_1)
+    assert result.is_solved, "Path should be sat"
+    assert result.information_gain > 0, "Information gain should be positive"
+
+
+@pytest.mark.asyncio
+async def test_join_computation_sat_2_iterations():
+    """
+    Test with 6x6 grid:
+    - First iteration (iteration_no=0): unsat path through dangerous cells
+    - Second iteration (iteration_no=1): sat path avoiding dangerous cells
+    """
+    # Create grids with dangerous cells in the middle-right area
+    # Dangerous cells (1) are in columns 3-5, rows 1-4
+    grid_1 = Grid(
+        [
+            [0, 0, 0, 1, 1, 1],
+            [0, 0, 0, 1, 1, 1],
+            [0, 0, 0, 1, 1, 1],
+            [0, 0, 0, 1, 1, 1],
+            [0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0],
+        ]
+    )
+    grid_2 = Grid(
+        [
+            [0, 0, 0, 1, 1, 1],  # Same pattern as grid_1
+            [0, 0, 0, 1, 1, 1],
+            [0, 0, 0, 1, 1, 1],
+            [0, 0, 0, 1, 1, 1],
+            [0, 0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0, 0],
+        ]
+    )
+
+    # First iteration: unsat path that goes through dangerous cells
+    # Path: (0,0) -> (0,1) -> (0,2) -> (0,3) -> (0,4) -> (0,5)
+    # This goes through dangerous cells at (0,3), (0,4), (0,5)
+    path_unsat = Path(
+        start=(0, 0),
+        moves=[
+            (0, 1),
+            (0, 1),
+            (0, 1),
+            (0, 1),
+            (0, 1),
+        ],  # Moves right through dangerous area
+    )
+
+    # Second iteration: sat path that avoids dangerous cells
+    # Path: (0,0) -> (1,0) -> (2,0) -> (3,0) -> (4,0) -> (5,0)
+    # This stays in the safe left columns (0-2)
+    path_sat = Path(
+        start=(0, 0),
+        moves=[(1, 0), (1, 0), (1, 0), (1, 0), (1, 0)],  # Moves down through safe area
+    )
+
+    num_parties = len([grid_1, grid_2]) + 1
+    grid_size = 6
+    query_size = 5
+    base_port = 5001
+
+    # First iteration: unsat path
+    result_unsat = await _run_sat_test_helper(
+        [grid_1, grid_2], path_unsat, iteration_no=0
+    )
+    assert not result_unsat.is_solved, "First iteration should be unsat"
+    assert result_unsat.information_gain > 0, "Information gain should be positive"
+
+    # Second iteration: sat path
+    result_sat = await _run_sat_test_helper([grid_1, grid_2], path_sat, iteration_no=1)
+    assert result_sat.is_solved, "Second iteration should be sat"
+    assert result_sat.information_gain > 0, "Information gain should be positive"
 
 
 if __name__ == "__main__":

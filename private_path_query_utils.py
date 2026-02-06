@@ -1,13 +1,15 @@
+from dataclasses import dataclass
 import os
 from typing import Tuple, List, Literal
-from pathlib import Path
+import pathlib
 import subprocess
 import asyncio
 from enum import Enum
 import sys
+import shutil
 
 # Resolve paths relative to THIS file, not the CWD
-_THIS_DIR = Path(__file__).resolve().parent
+_THIS_DIR = pathlib.Path(__file__).resolve().parent
 _SPDZ_ROOT = (_THIS_DIR / "MP-SPDZ").resolve()  # if MP-SPDZ is next to this file
 # If MP-SPDZ is one level up, use: (_THIS_DIR.parent / "MP-SPDZ").resolve()
 
@@ -46,7 +48,7 @@ class Path:
             assert dx in (-1, 0, 1), "Move dx must be -1, 0, or 1"
             assert dy in (-1, 0, 1), "Move dy must be -1, 0, or 1"
 
-    def iter_path_cells(self, path: Path):
+    def iter_path_cells(self, path: "Path"):
         """Yield all (x,y) cells visited by the path, including the start."""
         x, y = path.start
         yield (x, y)
@@ -84,23 +86,49 @@ class Grid:
         return res.rstrip()  # Remove trailing newline
 
 
+@dataclass
+class ComputationResult:
+    information_gain: float
+    is_solved: bool
+
+
 # ==============================================================================
 # Execution Logic
 # =============================================================================
 
 
-def parse_output(output: str) -> bool:
-    key_word = "is_solved ="
-    i = output.find(key_word)
-    if i == -1:
-        raise ValueError("Could not find 'is_solved' in output")
-    start = i + len(key_word)
-    end = output.find("\n", start)
-    is_solved_str = output[start:end].strip()
-    return is_solved_str == "1"
+def parse_output(output: str) -> ComputationResult:
+    def _find_key_word(key_word: str) -> str:
+        i = output.find(key_word)
+        if i == -1:
+            raise ValueError(f"Could not find {key_word} in output")
+        start = i + len(key_word)
+        end = output.find("\n", start)
+        is_solved_str = output[start:end].strip()
+        return is_solved_str
+
+    information_gain = float(_find_key_word("information_gain="))
+    is_solved = _find_key_word("is_solved=") == "1"
+    return ComputationResult(information_gain, is_solved)
 
 
-async def compile_private_path_query(num_parties: int, grid_size: int, query_size: int):
+def delete_persistence():
+    """Delete the Persistence folder in MP-SPDZ directory."""
+    persistence_dir = _SPDZ_ROOT / "Persistence"
+    if persistence_dir.exists():
+        shutil.rmtree(persistence_dir)
+        print(f"Deleted Persistence folder: {persistence_dir}")
+    else:
+        print(f"Persistence folder does not exist: {persistence_dir}")
+
+
+async def compile_private_path_query(
+    num_parties: int, grid_size: int, query_size: int, iteration_no: int = 0
+):
+    # Delete Persistence folder if starting from iteration 0, this causes the program to load a default prior
+    if iteration_no == 0:
+        delete_persistence()
+
     # compile the program
     path = [
         "python3",
@@ -111,9 +139,17 @@ async def compile_private_path_query(num_parties: int, grid_size: int, query_siz
         str(grid_size),
         "--query_size",
         str(query_size),
+        "--iteration_no",
+        str(iteration_no),
     ]
+    # Ensure we're using absolute path for cwd
+    abs_spdz_root = pathlib.Path(_SPDZ_ROOT).resolve()
+
     process = await asyncio.create_subprocess_exec(
-        *path, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        *path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(abs_spdz_root),  # Run from MP-SPDZ directory
     )
     stdout, stderr = await process.communicate()
 
@@ -134,7 +170,7 @@ async def join_computation(
     port: int | None = None,
     host: str | None = None,
     protocol: Protocol = Protocol.SHAMIR,
-) -> bool:
+) -> ComputationResult:
     """player join the computation on its own thread, need an id for bob"""
 
     if not input:
@@ -159,17 +195,25 @@ async def join_computation(
 
     if host:
         args.extend(["-h", host])
-        
+
     args.append("-v")
     args.append(program)
 
     print(f"Running command: {' '.join(args)}")
+
+    # Ensure we're using absolute path for cwd
+    abs_spdz_root = pathlib.Path(spdz_root).resolve()
+    print(f"Running from directory: {abs_spdz_root}")
+    print(f"Player-Data will be created at: {abs_spdz_root / 'Player-Data'}")
 
     process = await asyncio.create_subprocess_exec(
         *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         stdin=asyncio.subprocess.PIPE,
+        cwd=str(
+            abs_spdz_root
+        ),  # Run from MP-SPDZ directory so Player-Data and Persistence are created there
         env={
             **os.environ,
             "PYTHONPATH": str(_SPDZ_ROOT),
@@ -188,33 +232,36 @@ async def join_computation(
             if not line:
                 break
             decoded = line.decode()
-            print(f"{prefix}{decoded}", end='')
+            print(f"{prefix}{decoded}", end="")
             cache.append(decoded)
 
     # concurrently write input and read output
-    input_task = process.communicate(input=payload.encode()) # communicate handles stdin
+    input_task = process.communicate(
+        input=payload.encode()
+    )  # communicate handles stdin
     # wait for finish
     stdout_data, stderr_data = await input_task
-    
+
     # communicate returns bytes, so we can decode them here if we didn't use the streaming loop.
-    # But wait, communicate() reads stdout/stderr until EOF. 
+    # But wait, communicate() reads stdout/stderr until EOF.
     # If we want *live* streaming, we shouldn't use communicate for reading, only for writing?
     # Actually, communicate() buffers everything in memory.
     # To do live streaming + capture, it's safer to avoid communicate() or use it only if we don't care about live.
     # Given the previous hang, live streaming is preferred.
-    
+
     # Rethinking implementation for safety/conciseness in this tool call:
-    # Just use communicate and print the result *after* (if it finishes). 
+    # Just use communicate and print the result *after* (if it finishes).
     # If it hangs, we won't see it.
     # BUT, the user wants to see it run.
     # AND I need the result.
-    
+
     # Let's revert to capturing, but Print it immediately after capture (before parsing).
-    
+
     if process.returncode == 0:
         out_str = stdout_data.decode()
-        print(out_str) # Print for debug visibility
-        return parse_output(out_str)
+        print(out_str)  # Print for debug visibility
+        result: ComputationResult = parse_output(out_str)
+        return result
     else:
         err_str = stderr_data.decode()
         print(stdout_data.decode())
