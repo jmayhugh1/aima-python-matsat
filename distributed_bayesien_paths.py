@@ -260,8 +260,12 @@ async def run_bob(args):
     bob = Bob(grid=grid)
     protocol = Protocol(args.protocol)
     
-    print("Bob's Map (Hazards=1):")
+    print(f"=== Bob {args.party_id} - Original Obstacle Grid (1=Hazard, 0=Safe) ===")
     print(grid)
+    
+    print(f"\n=== Bob {args.party_id} - Initial Belief Map ===")
+    print(str(bob.bayes_map))
+
     
     # 1. Connect to Alice for Path Sharing
     # Use common args.port + 100
@@ -314,7 +318,7 @@ async def run_bob(args):
             # 4. Update Belief (Now possible!)
             print("Updating belief map...")
             bob.bayes_map.update_probabilities(path, is_safe)
-            print("Bob's Updated Belief Map:")
+            print(f"=== Bob {args.party_id} - Updated Belief Map ===")
             print(str(bob.bayes_map))
             
     except Exception as e:
