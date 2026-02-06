@@ -10,7 +10,7 @@ sleep 1
 
 # Common arguments
 GRID_SIZE=5
-ITERATIONS=100
+ITERATIONS=200
 SEED=42
 PROTOCOL="shamir"
 PORT=5000
@@ -18,7 +18,7 @@ HOST="localhost"
 NUM_PARTIES=3
 
 echo "Starting Alice (Party 0)..."
-python3 distributed_bayesien_paths.py \
+python3 -u distributed_bayesien_paths.py \
     --role alice \
     --party_id 0 \
     --num_parties $NUM_PARTIES \
@@ -27,13 +27,13 @@ python3 distributed_bayesien_paths.py \
     --seed $SEED \
     --grid_size $GRID_SIZE \
     --iterations $ITERATIONS \
-    --protocol $PROTOCOL &
+    --protocol $PROTOCOL 2>&1 | sed 's/^/[Alice] /' &
 
 # Give Alice a moment to bind the server port
 sleep 2
 
 echo "Starting Bob 1 (Party 1)..."
-python3 distributed_bayesien_paths.py \
+python3 -u distributed_bayesien_paths.py \
     --role bob \
     --party_id 1 \
     --num_parties $NUM_PARTIES \
@@ -42,10 +42,10 @@ python3 distributed_bayesien_paths.py \
     --seed $SEED \
     --grid_size $GRID_SIZE \
     --iterations $ITERATIONS \
-    --protocol $PROTOCOL &
+    --protocol $PROTOCOL 2>&1 | sed 's/^/[Bob1] /' &
 
 echo "Starting Bob 2 (Party 2)..."
-python3 distributed_bayesien_paths.py \
+python3 -u distributed_bayesien_paths.py \
     --role bob \
     --party_id 2 \
     --num_parties $NUM_PARTIES \
@@ -54,7 +54,7 @@ python3 distributed_bayesien_paths.py \
     --seed $SEED \
     --grid_size $GRID_SIZE \
     --iterations $ITERATIONS \
-    --protocol $PROTOCOL &
+    --protocol $PROTOCOL 2>&1 | sed 's/^/[Bob2] /' &
 
 # Wait for all background jobs to finish
 wait
