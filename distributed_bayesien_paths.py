@@ -5,6 +5,7 @@ import os
 import pickle
 import struct
 from typing import List, Tuple
+from private_path_query_utils import ComputationResult
 
 # Add parent directory to path to import modules
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -305,7 +306,7 @@ async def run_bob(args):
             
             # 3. Run MPC
             print("Joining MPC computation...")
-            is_safe = await join_computation(
+            result : ComputationResult = await join_computation(
                 id=args.party_id,
                 num_parties=args.num_parties,
                 input=bob.grid,
@@ -313,7 +314,10 @@ async def run_bob(args):
                 host=args.host,
                 protocol=protocol
             )
+            is_safe = result.is_solved
+            information_gain = result.information_gain
             print(f"MPC Result: {'SAFE' if is_safe else 'UNSAFE'}")
+            print(f"Information Gain: {information_gain}")
             
             # 4. Update Belief (Now possible!)
             print("Updating belief map...")
