@@ -1,7 +1,11 @@
 import os
 import pytest
 import asyncio
+import tempfile
+import shutil
+import pathlib
 from typing import List, Tuple
+from unittest.mock import patch
 from private_path_query_utils import (
     compile_private_path_query,
     join_computation,
@@ -9,6 +13,7 @@ from private_path_query_utils import (
     Path,
     parse_output,
     ComputationResult,
+    delete_persistence,
 )
 
 
@@ -42,6 +47,54 @@ def test_parse_output_invalid():
     output_invalid = "Some output...\nNo relevant info here.\nMore output..."
     with pytest.raises(ValueError):
         parse_output(output_invalid)
+
+
+def test_delete_persistence_folder_exists():
+    """Test that delete_persistence deletes the Persistence folder when it exists."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a mock MP-SPDZ structure
+        mock_spdz_root = pathlib.Path(tmpdir) / "MP-SPDZ"
+        mock_spdz_root.mkdir()
+        persistence_dir = mock_spdz_root / "Persistence"
+        persistence_dir.mkdir()
+
+        # Create a test file inside to verify deletion
+        test_file = persistence_dir / "test_file.txt"
+        test_file.write_text("test content")
+
+        # Verify folder exists before deletion
+        assert (
+            persistence_dir.exists()
+        ), "Persistence folder should exist before deletion"
+        assert test_file.exists(), "Test file should exist before deletion"
+
+        # Mock _SPDZ_ROOT to point to our temporary directory
+        with patch("private_path_query_utils._SPDZ_ROOT", mock_spdz_root):
+            delete_persistence()
+
+        # Verify folder was deleted
+        assert not persistence_dir.exists(), "Persistence folder should be deleted"
+        assert not test_file.exists(), "Test file should be deleted"
+
+
+def test_delete_persistence_folder_not_exists():
+    """Test that delete_persistence handles missing folder gracefully."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create a mock MP-SPDZ structure without Persistence folder
+        mock_spdz_root = pathlib.Path(tmpdir) / "MP-SPDZ"
+        mock_spdz_root.mkdir()
+        persistence_dir = mock_spdz_root / "Persistence"
+
+        # Verify folder doesn't exist
+        assert not persistence_dir.exists(), "Persistence folder should not exist"
+
+        # Mock _SPDZ_ROOT to point to our temporary directory
+        with patch("private_path_query_utils._SPDZ_ROOT", mock_spdz_root):
+            # Should not raise an error
+            delete_persistence()
+
+        # Verify folder still doesn't exist (no error occurred)
+        assert not persistence_dir.exists(), "Persistence folder should still not exist"
 
 
 async def _run_sat_test_helper(

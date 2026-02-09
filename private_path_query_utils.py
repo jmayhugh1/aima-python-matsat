@@ -124,7 +124,27 @@ def delete_persistence():
 
 async def compile_private_path_query(
     num_parties: int, grid_size: int, query_size: int, iteration_no: int = 0
-):
+) -> bool:
+    """
+    Compile the private_path_query MP-SPDZ program.
+
+    This function compiles the MPC program with the specified parameters. If
+    iteration_no is 0, it deletes the Persistence folder to ensure a fresh start
+    with default priors.
+
+    Args:
+        num_parties: Number of parties participating in the MPC computation.
+        grid_size: Size of the grid (NxN) for the path query problem.
+        query_size: Length of the path query.
+        iteration_no: Iteration number (default: 0). If 0, deletes persistence
+            to start with default priors.
+
+    Returns:
+        True if compilation succeeded, False otherwise.
+
+    Raises:
+        FileNotFoundError: If the MP-SPDZ program file is not found.
+    """
     # Delete Persistence folder if starting from iteration 0, this causes the program to load a default prior
     if iteration_no == 0:
         delete_persistence()
@@ -171,7 +191,41 @@ async def join_computation(
     host: str | None = None,
     protocol: Protocol = Protocol.SHAMIR,
 ) -> ComputationResult:
-    """player join the computation on its own thread, need an id for bob"""
+    """
+    Join an MPC computation as a party and execute the private_path_query program.
+
+    This function runs the MP-SPDZ party executable with the provided input (either
+    a Grid or Path) and returns the computation result containing information gain
+    and whether the path was solved (safe).
+
+    Args:
+        id: Party ID (0 for Alice, 1..N for Bobs).
+        num_parties: Total number of parties in the computation.
+        input: Either a Grid (for Bob parties) or Path (for Alice party) to provide
+            as input to the MPC program.
+        port: Base port number for network communication (default: None, uses MP-SPDZ
+            default of 5000). MP-SPDZ will assign ports as base_port + party_id.
+        host: Hostname where party 0 is running (default: None, uses localhost).
+        protocol: MPC protocol to use (default: Protocol.SHAMIR).
+
+    Returns:
+        ComputationResult containing:
+            - information_gain: Float value representing the information gain
+              from the Bayesian update.
+            - is_solved: Boolean indicating if the path query was solved (True
+              means path is safe, False means unsafe/unsatisfiable).
+
+    Raises:
+        ValueError: If input is None or if Shamir protocol is used with less than
+            3 parties.
+        RuntimeError: If the MPC computation fails (non-zero exit code).
+
+    Note:
+        The function runs the party executable as a subprocess and communicates
+        via stdin/stdout. The input is serialized as a string and sent to the
+        program. The output is parsed to extract information_gain and is_solved
+        values.
+    """
 
     if not input:
         raise ValueError("Either grid or path must be provided")
