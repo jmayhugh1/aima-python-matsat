@@ -8,12 +8,14 @@ from typing import List, Tuple
 from unittest.mock import patch
 from private_path_query_utils import (
     compile_private_path_query,
+    compile_verifier,
     join_computation,
     Grid,
     Path,
     parse_output,
     ComputationResult,
     delete_persistence,
+    ProgramName,
 )
 
 
@@ -47,6 +49,29 @@ def test_parse_output_invalid():
     output_invalid = "Some output...\nNo relevant info here.\nMore output..."
     with pytest.raises(ValueError):
         parse_output(output_invalid)
+
+
+def test_parse_output_verifier_safe():
+    """Test parsing verifier output when path is safe."""
+    output_safe = "Some output...\nPath is safe: 1\nHazards on path (count of matches): 0\nMore output..."
+    result: ComputationResult = parse_output(output_safe, ProgramName.VERIFIER)
+    assert result.is_solved, "Path should be marked as safe (solved)"
+    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+
+
+def test_parse_output_verifier_unsafe():
+    """Test parsing verifier output when path is unsafe."""
+    output_unsafe = "Some output...\nPath is safe: 0\nHazards on path (count of matches): 3\nMore output..."
+    result: ComputationResult = parse_output(output_unsafe, ProgramName.VERIFIER)
+    assert not result.is_solved, "Path should be marked as unsafe (not solved)"
+    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+
+
+def test_parse_output_verifier_invalid():
+    """Test parsing verifier output with missing key."""
+    output_invalid = "Some output...\nNo relevant info here.\nMore output..."
+    with pytest.raises(ValueError):
+        parse_output(output_invalid, ProgramName.VERIFIER)
 
 
 def test_delete_persistence_folder_exists():
@@ -337,6 +362,124 @@ async def test_join_computation_sat_2_iterations():
     result_sat = await _run_sat_test_helper([grid_1, grid_2], path_sat, iteration_no=1)
     assert result_sat.is_solved, "Second iteration should be sat"
     assert result_sat.information_gain > 0, "Information gain should be positive"
+
+
+async def _run_verifier_test_helper(
+    grids: List[Grid], path: Path
+) -> ComputationResult:
+    """
+    Helper function to run a verifier test computation.
+
+    Returns:
+        ComputationResult with is_solved (True = safe, False = unsafe) and information_gain (0.0)
+    """
+    num_parties = len(grids) + 1
+    grid_size = len(grids[0].grid)
+    query_size = len(path.moves)
+    base_port = 5002  # Use different port to avoid conflicts
+
+    ok = await compile_verifier(num_parties, grid_size, query_size)
+    assert ok, "SPDZ verifier compile failed"
+
+    inputs = [path] + grids
+
+    tasks = [
+        asyncio.create_task(
+            join_computation(
+                id=i,
+                num_parties=num_parties,
+                input=inputs[i],
+                port=base_port,
+                program_name=ProgramName.VERIFIER,
+            )
+        )
+        for i in range(num_parties)
+    ]
+
+    results = await asyncio.gather(*tasks)
+
+    final_result = results[0]  # assuming party 0 returns the result
+    return final_result
+
+
+@pytest.mark.asyncio
+async def test_compile_verifier():
+    """Test that compile_verifier compiles successfully."""
+    ok = await compile_verifier(num_parties=3, grid_size=3, query_size=2)
+    assert ok, "Verifier compilation should succeed"
+
+
+@pytest.mark.asyncio
+async def test_join_computation_verifier_safe():
+    """Test verifier with a safe path (no hazards)."""
+    grid_1 = Grid([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+    grid_2 = Grid([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+    path_1 = Path(start=(0, 0), moves=[(1, 0), (1, 0)])
+    result = await _run_verifier_test_helper([grid_1, grid_2], path_1)
+    assert result.is_solved, "Path should be safe (no hazards)"
+    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+
+
+@pytest.mark.asyncio
+async def test_join_computation_verifier_unsafe():
+    """Test verifier with an unsafe path (has hazards)."""
+    # Create grids with hazards along the path
+    # Path: (0,0) -> (1,0) -> (2,0)
+    # So we need hazards at (0,0), (1,0), or (2,0)
+    grid_1 = Grid([[1, 0, 0], [1, 0, 0], [1, 0, 0]])  # Hazards in first column
+    grid_2 = Grid([[1, 0, 0], [1, 0, 0], [1, 0, 0]])  # Same pattern
+    path_1 = Path(start=(0, 0), moves=[(1, 0), (1, 0)])  # Goes through (0,0), (1,0), (2,0)
+    result = await _run_verifier_test_helper([grid_1, grid_2], path_1)
+    assert not result.is_solved, "Path should be unsafe (has hazards)"
+    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+
+
+@pytest.mark.asyncio
+async def test_join_computation_verifier_partial_hazard():
+    """Test verifier with a path that has some hazards but not all."""
+    # Path: (0,0) -> (0,1) -> (0,2)
+    # Grid has hazards at (0,1) but not at (0,0) or (0,2)
+    grid_1 = Grid([[0, 1, 0], [0, 0, 0], [0, 0, 0]])
+    grid_2 = Grid([[0, 1, 0], [0, 0, 0], [0, 0, 0]])
+    path_1 = Path(start=(0, 0), moves=[(0, 1), (0, 1)])
+    result = await _run_verifier_test_helper([grid_1, grid_2], path_1)
+    # Path should be unsafe because it hits a hazard at (0,1)
+    assert not result.is_solved, "Path should be unsafe (hits hazard at (0,1))"
+    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+
+
+@pytest.mark.asyncio
+async def test_join_computation_verifier_5x5():
+    """Test verifier with a larger 5x5 grid."""
+    grid_1 = Grid(
+        [
+            [0, 0, 0, 1, 0],
+            [1, 1, 0, 1, 0],
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+        ]
+    )
+    grid_2 = Grid(
+        [
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+            [0, 0, 0, 0, 0],
+            [0, 1, 1, 1, 0],
+            [0, 0, 0, 0, 0],
+        ]
+    )
+
+    # Path: (0,0) -> (0,1) -> (0,2) -> (1,2) -> (2,2) -> (2,3) -> (2,4) -> (3,4) -> (4,4)
+    # This path avoids the hazards in grid_1 (row 1, cols 0,1,3) and grid_2 (row 3, cols 1,2,3)
+    path_1 = Path(
+        start=(0, 0),
+        moves=[(0, 1), (0, 1), (1, 0), (1, 0), (0, 1), (0, 1), (1, 0), (1, 0)],
+    )
+
+    result = await _run_verifier_test_helper([grid_1, grid_2], path_1)
+    assert result.is_solved, "Path should be safe (avoids all hazards)"
+    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
 
 
 if __name__ == "__main__":

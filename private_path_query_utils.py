@@ -24,6 +24,7 @@ os.environ["PYTHONPATH"] = str(_SPDZ_ROOT)
 
 spdz_root = str(_SPDZ_ROOT)
 
+# Default program (for backward compatibility)
 program = "private_path_query"
 program_path = str(_SPDZ_ROOT / "Programs" / "Source" / f"{program}.py")
 run_parties_path = str(_SPDZ_ROOT / "run-parties.py")
@@ -38,6 +39,11 @@ Spot = Literal[0, 1]
 class Protocol(Enum):
     SHAMIR = "shamir"
     MASCOT = "mascot"
+
+
+class ProgramName(Enum):
+    PRIVATE_PATH_QUERY = "private_path_query"
+    VERIFIER = "verifier"
 
 
 class Path:
@@ -97,7 +103,9 @@ class ComputationResult:
 # =============================================================================
 
 
-def parse_output(output: str) -> ComputationResult:
+def parse_output(
+    output: str, program_name: ProgramName = ProgramName.PRIVATE_PATH_QUERY
+) -> ComputationResult:
     def _find_key_word(key_word: str) -> str:
         i = output.find(key_word)
         if i == -1:
@@ -107,8 +115,18 @@ def parse_output(output: str) -> ComputationResult:
         is_solved_str = output[start:end].strip()
         return is_solved_str
 
-    information_gain = float(_find_key_word("information_gain="))
-    is_solved = _find_key_word("is_solved=") == "1"
+    if program_name == ProgramName.VERIFIER:
+        # Verifier outputs: "Path is safe: %s" where %s is 1 (safe) or 0 (unsafe)
+        # and "Hazards on path (count of matches): %s"
+        safe_str = _find_key_word("Path is safe: ")
+        is_solved = safe_str.strip() == "1"
+        # For verifier, information_gain is not applicable, set to 0.0
+        information_gain = 0.0
+    else:
+        # private_path_query outputs: "information_gain=" and "is_solved="
+        information_gain = float(_find_key_word("information_gain="))
+        is_solved = _find_key_word("is_solved=") == "1"
+
     return ComputationResult(information_gain, is_solved)
 
 
@@ -183,6 +201,57 @@ async def compile_private_path_query(
         return False
 
 
+async def compile_verifier(num_parties: int, grid_size: int, query_size: int) -> bool:
+    """
+    Compile the verifier MP-SPDZ program.
+
+    This function compiles the verifier MPC program with the specified parameters.
+
+    Args:
+        num_parties: Number of parties participating in the MPC computation.
+        grid_size: Size of the grid (NxN) for the path query problem.
+        query_size: Length of the path query.
+
+    Returns:
+        True if compilation succeeded, False otherwise.
+
+    Raises:
+        FileNotFoundError: If the MP-SPDZ program file is not found.
+    """
+    verifier_program_path = str(_SPDZ_ROOT / "Programs" / "Source" / "verifier.py")
+
+    # compile the program
+    path = [
+        "python3",
+        verifier_program_path,
+        "--num_parties",
+        str(num_parties),
+        "--grid_size",
+        str(grid_size),
+        "--query_size",
+        str(query_size),
+    ]
+    # Ensure we're using absolute path for cwd
+    abs_spdz_root = pathlib.Path(_SPDZ_ROOT).resolve()
+
+    process = await asyncio.create_subprocess_exec(
+        *path,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(abs_spdz_root),  # Run from MP-SPDZ directory
+    )
+    stdout, stderr = await process.communicate()
+
+    if process.returncode == 0:
+        print("Output:", stdout.decode())
+        return True
+    else:
+        print("An error occurred while running the command.")
+        print("Output:", stdout.decode())
+        print("Errors:", stderr.decode())
+        return False
+
+
 async def join_computation(
     id: int,
     num_parties: int,
@@ -190,9 +259,10 @@ async def join_computation(
     port: int | None = None,
     host: str | None = None,
     protocol: Protocol = Protocol.SHAMIR,
+    program_name: ProgramName = ProgramName.PRIVATE_PATH_QUERY,
 ) -> ComputationResult:
     """
-    Join an MPC computation as a party and execute the private_path_query program.
+    Join an MPC computation as a party and execute the specified program.
 
     This function runs the MP-SPDZ party executable with the provided input (either
     a Grid or Path) and returns the computation result containing information gain
@@ -207,11 +277,12 @@ async def join_computation(
             default of 5000). MP-SPDZ will assign ports as base_port + party_id.
         host: Hostname where party 0 is running (default: None, uses localhost).
         protocol: MPC protocol to use (default: Protocol.SHAMIR).
+        program_name: Name of the program to execute (default: ProgramName.PRIVATE_PATH_QUERY).
 
     Returns:
         ComputationResult containing:
             - information_gain: Float value representing the information gain
-              from the Bayesian update.
+              from the Bayesian update (for private_path_query) or 0.0 (for verifier).
             - is_solved: Boolean indicating if the path query was solved (True
               means path is safe, False means unsafe/unsatisfiable).
 
@@ -251,7 +322,7 @@ async def join_computation(
         args.extend(["-h", host])
 
     args.append("-v")
-    args.append(program)
+    args.append(program_name.value)
 
     print(f"Running command: {' '.join(args)}")
 
@@ -301,7 +372,7 @@ async def join_computation(
     if process.returncode == 0:
         out_str = stdout_data.decode()
         print(out_str)  # Print for debug visibility
-        result: ComputationResult = parse_output(out_str)
+        result: ComputationResult = parse_output(out_str, program_name)
         return result
     else:
         err_str = stderr_data.decode()
