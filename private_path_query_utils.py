@@ -276,19 +276,6 @@ async def join_computation(
         },
     )
 
-    # Helper to read stream and print/capture
-    cached_stdout = []
-    cached_stderr = []
-
-    async def read_stream(stream, cache, prefix=""):
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            decoded = line.decode()
-            print(f"{prefix}{decoded}", end="")
-            cache.append(decoded)
-
     # concurrently write input and read output
     input_task = process.communicate(
         input=payload.encode()
