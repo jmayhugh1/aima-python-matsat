@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import os
-from typing import Tuple, List, Literal
+from typing import Tuple, List, Literal, Protocol
+from abc import ABC, abstractmethod
 import pathlib
 import subprocess
 import asyncio
@@ -46,7 +47,35 @@ class ProgramName(Enum):
     VERIFIER = "verifier"
 
 
-class Path:
+# ===============================================================================
+# BASE CLASSES
+# ===============================================================================
+
+
+class BasePath(ABC):
+    """Base class for all path types."""
+
+    @abstractmethod
+    def __str__(self) -> str:
+        """Serialize the path for MPC input."""
+        pass
+
+
+class Environment(ABC):
+    """Base class for all environment types (Grid, Graph, etc.)."""
+
+    @abstractmethod
+    def __str__(self) -> str:
+        """Serialize the environment for MPC input."""
+        pass
+
+
+# ===============================================================================
+# PATH IMPLEMENTATIONS
+# ===============================================================================
+
+
+class Path(BasePath):
     def __init__(self, start: Tuple[int, int], moves: List[Tuple[int, int]]):
         self.start: Tuple[int, int] = start
         self.moves: List[Tuple[int, int]] = moves
@@ -62,7 +91,7 @@ class Path:
             x, y = x + dx, y + dy
             yield (x, y)
 
-    def __str__(self):
+    def __str__(self) -> str:
         res = ""
         res += f"{str(self.start[0])}\n{self.start[1]}\n"
         for dx, dy in self.moves:
@@ -76,7 +105,12 @@ class Path:
         return res
 
 
-class Grid:
+# ===============================================================================
+# ENVIRONMENT IMPLEMENTATIONS
+# ===============================================================================
+
+
+class Grid(Environment):
     def __init__(self, grid=List[List[Spot]]):
         self.grid = grid
         self.dim = len(grid)
@@ -85,11 +119,94 @@ class Grid:
             spot in (0, 1) for row in grid for spot in row
         ), "Grid spots must be 0 or 1"
 
-    def __str__(self):
+    def __str__(self) -> str:
         res = ""
         for row in self.grid:
             res += " ".join(str(spot) for spot in row) + "\n"
         return res.rstrip()  # Remove trailing newline
+
+
+@dataclass
+class Vertex:
+    id: int
+
+    def __hash__(self):
+        return hash(self.id)
+
+    def __eq__(self, other):
+        return self.id == other.id
+
+    def __ne__(self, other):
+        return self.id != other.id
+
+    def __lt__(self, other):
+        return self.id < other.id
+
+    def __gt__(self, other):
+        return self.id > other.id
+
+    def __le__(self, other):
+        return self.id <= other.id
+
+
+@dataclass
+class Edge:
+    vertex1: Vertex
+    vertex2: Vertex
+
+    def __hash__(self):
+        return hash(sorted((self.vertex1.id, self.vertex2.id)))
+
+
+class Graph(Environment):
+    def __init__(self, vertices: List[Vertex], edges: List[Edge]):
+        self.vertices = vertices
+        self.edges = edges
+
+        # all ids in vertices are unique
+        assert len(vertices) == len(
+            set(vertex.id for vertex in vertices)
+        ), "Vertices must have unique ids"
+
+        self.adjacency_list = [[0] * len(vertices) for _ in range(len(vertices))]
+        for edge in edges:
+            self.adjacency_list[edge.vertex1.id][edge.vertex2.id] = 1
+            self.adjacency_list[edge.vertex2.id][edge.vertex1.id] = 1
+
+    def __str__(self) -> str:
+        """Print out the adjacency list of the graph."""
+        res = ""
+        for i in range(len(self.adjacency_list)):
+            for j in range(len(self.adjacency_list[i])):
+                res += f"{self.adjacency_list[i][j]} "
+            res += "\n"
+        return res.rstrip()
+
+
+class GraphPath(BasePath):
+    def __init__(self, start: Vertex, moves: List[Edge]):
+        self.start = start
+        self.moves = moves
+        if moves:
+            # First edge must start from the start vertex
+            assert (
+                moves[0].vertex1.id == start.id
+            ), "Start vertex must be the first vertex in the path"
+            # Edges must be consecutive
+            for i in range(len(moves) - 1):
+                assert (
+                    moves[i].vertex2.id == moves[i + 1].vertex1.id
+                ), "Edges must be consecutive"
+            self.end = moves[-1].vertex2
+        else:
+            self.end = start
+
+    def __str__(self) -> str:
+        """prints out the pairs of verteces that are connected by an edge"""
+        res = ""
+        for edge in self.moves:
+            res += f"{edge.vertex1.id} {edge.vertex2.id}\n"
+        return res.rstrip()
 
 
 @dataclass
@@ -141,7 +258,11 @@ def delete_persistence():
 
 
 async def compile_private_path_query(
-    num_parties: int, grid_size: int, query_size: int, iteration_no: int = 0
+    num_parties: int,
+    grid_size: int,
+    query_size: int,
+    iteration_no: int = 0,
+    is_graph: bool = False,
 ) -> bool:
     """
     Compile the private_path_query MP-SPDZ program.
@@ -180,6 +301,9 @@ async def compile_private_path_query(
         "--iteration_no",
         str(iteration_no),
     ]
+    # Only add --is_graph flag if it's True (action="store_true" means flag presence = True)
+    if is_graph:
+        path.append("--is_graph")
     # Ensure we're using absolute path for cwd
     abs_spdz_root = pathlib.Path(_SPDZ_ROOT).resolve()
 
@@ -201,7 +325,9 @@ async def compile_private_path_query(
         return False
 
 
-async def compile_verifier(num_parties: int, grid_size: int, query_size: int) -> bool:
+async def compile_verifier(
+    num_parties: int, grid_size: int, query_size: int, is_graph: bool = False
+) -> bool:
     """
     Compile the verifier MP-SPDZ program.
 
@@ -211,6 +337,7 @@ async def compile_verifier(num_parties: int, grid_size: int, query_size: int) ->
         num_parties: Number of parties participating in the MPC computation.
         grid_size: Size of the grid (NxN) for the path query problem.
         query_size: Length of the path query.
+        is_graph: Whether to use graph mode (default: False).
 
     Returns:
         True if compilation succeeded, False otherwise.
@@ -231,6 +358,9 @@ async def compile_verifier(num_parties: int, grid_size: int, query_size: int) ->
         "--query_size",
         str(query_size),
     ]
+    # Only add --is_graph flag if it's True (action="store_true" means flag presence = True)
+    if is_graph:
+        path.append("--is_graph")
     # Ensure we're using absolute path for cwd
     abs_spdz_root = pathlib.Path(_SPDZ_ROOT).resolve()
 
@@ -255,7 +385,7 @@ async def compile_verifier(num_parties: int, grid_size: int, query_size: int) ->
 async def join_computation(
     id: int,
     num_parties: int,
-    input: Grid | Path,
+    input: Environment | Path,
     port: int | None = None,
     host: str | None = None,
     protocol: Protocol = Protocol.SHAMIR,

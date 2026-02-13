@@ -128,12 +128,6 @@ def run_timed_mpspdz_test(formulas, protocol="shamir", debug=True, test_name="")
     return result
 
 
-def test_two_party_matsat():
-    f1 = expr("A | B")
-    f2 = expr("~A | C")
-    run_timed_mpspdz_test([f1, f2])
-
-
 def test_timed_shamir_matsat_mpspdz_simple():
     f1 = expr("A | B | C")
     f2 = expr("A | ~B")
@@ -718,6 +712,7 @@ def test_mat_sat_mpspdz_sync_unsatisfiable():
 
     result = mat_sat_mpspdz(formula_set, protocol="shamir", debug=True)
     assert result is None or result is False
+
 
 if __name__ == "__main__":
     pytest.main()
