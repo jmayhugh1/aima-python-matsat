@@ -20,7 +20,9 @@ from private_path_query_utils import (
     GraphPath,
     Vertex,
     Edge,
+    EdgeState,
     BasePath,
+    Environment,
 )
 
 
@@ -44,10 +46,16 @@ def test_parse_output():
     result_unsat: ComputationResult = parse_output(output_unsat)
     assert not result_unsat.is_solved
     assert result_unsat.information_gain == 0.0
+    assert result_unsat.satisfied_clauses is None
+    assert result_unsat.u_vector is None
+    assert result_unsat.hazards_on_path is None
 
     result_sat: ComputationResult = parse_output(output_sat)
     assert result_sat.is_solved
     assert result_sat.information_gain == 0.5
+    assert result_sat.satisfied_clauses is None
+    assert result_sat.u_vector is None
+    assert result_sat.hazards_on_path is None
 
 
 def test_parse_output_invalid():
@@ -58,18 +66,20 @@ def test_parse_output_invalid():
 
 def test_parse_output_verifier_safe():
     """Test parsing verifier output when path is safe."""
-    output_safe = "Some output...\nPath is safe: 1\nHazards on path (count of matches): 0\nMore output..."
+    output_safe = "Some output...\ninformation_gain= 0.42\nPath is safe: 1\nHazards on path (count of matches): 0\nMore output..."
     result: ComputationResult = parse_output(output_safe, ProgramName.VERIFIER)
     assert result.is_solved, "Path should be marked as safe (solved)"
-    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+    assert result.information_gain == 0.42
+    assert result.hazards_on_path == 0
 
 
 def test_parse_output_verifier_unsafe():
     """Test parsing verifier output when path is unsafe."""
-    output_unsafe = "Some output...\nPath is safe: 0\nHazards on path (count of matches): 3\nMore output..."
+    output_unsafe = "Some output...\ninformation_gain= 0.11\nPath is safe: 0\nHazards on path (count of matches): 3\nMore output..."
     result: ComputationResult = parse_output(output_unsafe, ProgramName.VERIFIER)
     assert not result.is_solved, "Path should be marked as unsafe (not solved)"
-    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+    assert result.information_gain == 0.11
+    assert result.hazards_on_path == 3
 
 
 def test_parse_output_verifier_invalid():
@@ -77,6 +87,67 @@ def test_parse_output_verifier_invalid():
     output_invalid = "Some output...\nNo relevant info here.\nMore output..."
     with pytest.raises(ValueError):
         parse_output(output_invalid, ProgramName.VERIFIER)
+
+
+def test_parse_output_find_safe_path():
+    output_sat = "Some output...\nis_solved = 1\nsatisfied clauses = 64\nMore output..."
+    output_unsat = (
+        "Some output...\nis_solved = 0\nsatisfied clauses = 60\nMore output..."
+    )
+
+    result_sat: ComputationResult = parse_output(output_sat, ProgramName.FIND_SAFE_PATH)
+    assert result_sat.is_solved
+    assert result_sat.information_gain == 0.0
+    assert result_sat.satisfied_clauses == 64.0
+    assert result_sat.u_vector is None
+    assert result_sat.hazards_on_path is None
+
+    result_unsat: ComputationResult = parse_output(
+        output_unsat, ProgramName.FIND_SAFE_PATH
+    )
+    assert not result_unsat.is_solved
+    assert result_unsat.information_gain == 0.0
+    assert result_unsat.satisfied_clauses == 60.0
+    assert result_unsat.u_vector is None
+    assert result_unsat.hazards_on_path is None
+
+
+def test_parse_output_find_safe_path_structured_with_u_vector():
+    output = "\n".join(
+        [
+            "RESULT_TYPE=MatSatResult",
+            "RESULT_IS_SOLVED=0",
+            "RESULT_SATISFIED_CLAUSES=60",
+            "RESULT_U[0]=1",
+            "RESULT_U[2]=1",
+            "RESULT_U[1]=0",
+        ]
+    )
+    result: ComputationResult = parse_output(output, ProgramName.FIND_SAFE_PATH)
+    assert not result.is_solved
+    assert result.information_gain == 0.0
+    assert result.satisfied_clauses == 60.0
+    assert result.u_vector == [1, 0, 1]
+    assert result.hazards_on_path is None
+
+
+def test_parse_output_verifier_structured():
+    output = "\n".join(
+        [
+            "Path is safe: 1",
+            "Hazards on path (count of matches): 0",
+            "RESULT_TYPE=VerifierResult",
+            "RESULT_IS_SOLVED=1",
+            "RESULT_INFORMATION_GAIN=0.33",
+            "RESULT_HAZARDS_ON_PATH=0",
+        ]
+    )
+    result: ComputationResult = parse_output(output, ProgramName.VERIFIER)
+    assert result.is_solved
+    assert result.information_gain == 0.33
+    assert result.satisfied_clauses is None
+    assert result.u_vector is None
+    assert result.hazards_on_path == 0
 
 
 def test_delete_persistence_folder_exists():
@@ -127,8 +198,26 @@ def test_delete_persistence_folder_not_exists():
         assert not persistence_dir.exists(), "Persistence folder should still not exist"
 
 
+def _environment_size(env: Environment) -> int:
+    """Get square environment size for Grid/Graph inputs."""
+    if isinstance(env, Grid):
+        return len(env.grid)
+    if isinstance(env, Graph):
+        return len(env.adjacency_list)
+    raise TypeError(f"Unsupported environment type: {type(env)}")
+
+
+def _graph_from_edge_states(edge_states: List[List[int]]) -> Graph:
+    """Build a Graph object from an NxN edge-state matrix."""
+    vertices = [Vertex(id=i) for i in range(len(edge_states))]
+    return Graph(vertices=vertices, edge_states=edge_states)
+
+
 async def _run_sat_test_helper(
-    grids: List[Grid], path: BasePath, iteration_no: int = 0, is_graph: bool = False
+    environments: List[Environment],
+    path: BasePath,
+    iteration_no: int = 0,
+    is_graph: bool = False,
 ) -> ComputationResult:
     """
     Helper function to run a SAT test computation.
@@ -136,8 +225,8 @@ async def _run_sat_test_helper(
     Returns:
         ComputationResult with is_solved and information_gain
     """
-    num_parties = len(grids) + 1
-    grid_size = len(grids[0].grid)
+    num_parties = len(environments) + 1
+    grid_size = _environment_size(environments[0])
     query_size = len(path.moves)
     base_port = 5001
 
@@ -146,7 +235,7 @@ async def _run_sat_test_helper(
     )
     assert ok, "SPDZ compile failed"
 
-    inputs = [path] + grids
+    inputs = [path] + environments
 
     tasks = [
         asyncio.create_task(
@@ -370,16 +459,19 @@ async def test_join_computation_sat_2_iterations():
 
 
 async def _run_verifier_test_helper(
-    grids: List[Grid], path: BasePath, is_graph: bool = False
+    environments: List[Environment],
+    path: BasePath,
+    is_graph: bool = False,
+    iteration_no: int = 0,
 ) -> ComputationResult:
     """
     Helper function to run a verifier test computation.
 
     Returns:
-        ComputationResult with is_solved (True = safe, False = unsafe) and information_gain (0.0)
+        ComputationResult with is_solved (True = safe, False = unsafe) and information_gain
     """
-    num_parties = len(grids) + 1
-    grid_size = len(grids[0].grid)
+    num_parties = len(environments) + 1
+    grid_size = _environment_size(environments[0])
     # In both grid and graph modes, query_size is the number of "steps":
     # - Grid Path: number of (dx, dy) moves
     # - GraphPath: number of edges (u, v)
@@ -391,10 +483,11 @@ async def _run_verifier_test_helper(
         grid_size=grid_size,
         query_size=query_size,
         is_graph=is_graph,
+        iteration_no=iteration_no,
     )
     assert ok, "SPDZ verifier compile failed"
 
-    inputs = [path] + grids
+    inputs = [path] + environments
 
     tasks = [
         asyncio.create_task(
@@ -430,7 +523,10 @@ async def test_join_computation_verifier_safe():
     path_1 = Path(start=(0, 0), moves=[(1, 0), (1, 0)])
     result = await _run_verifier_test_helper([grid_1, grid_2], path_1)
     assert result.is_solved, "Path should be safe (no hazards)"
-    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+    assert result.information_gain is not None
+    assert (
+        result.information_gain > 0
+    ), "Information gain should be positive for verifier"
 
 
 @pytest.mark.asyncio
@@ -446,7 +542,10 @@ async def test_join_computation_verifier_unsafe():
     )  # Goes through (0,0), (1,0), (2,0)
     result = await _run_verifier_test_helper([grid_1, grid_2], path_1)
     assert not result.is_solved, "Path should be unsafe (has hazards)"
-    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+    assert result.information_gain is not None
+    assert (
+        result.information_gain > 0
+    ), "Information gain should be positive for verifier"
 
 
 @pytest.mark.asyncio
@@ -465,28 +564,30 @@ async def test_join_computation_verifier_graph_safe():
     # Path: 0 -> 1 -> 2 (edges e01 and e12)
     path = GraphPath(start=v0, moves=[e01, e12])
 
-    # Hazard matrix: 4x4, hazard_matrix[u][v] = 1 means hazardous edge (u -> v)
-    # Make edge (2,3) hazardous, but keep (0,1) and (1,2) safe.
-    grid_1 = Grid(
-        [
-            [0, 0, 0, 0],
-            [0, 0, 0, 0],
-            [0, 0, 0, 1],  # edge 2->3 hazardous
-            [0, 0, 0, 0],
-        ]
-    )
-    grid_2 = Grid(
-        [
-            [0, 0, 0, 0],
-            [0, 0, 0, 0],
-            [0, 0, 0, 1],
-            [0, 0, 0, 0],
-        ]
-    )
+    # Graph edge-state matrix: 2=traversable, 1=blocked, 0=no edge.
+    # Make edge (2,3) blocked, but keep (0,1) and (1,2) traversable.
+    edge_states_1 = [
+        [0, 2, 0, 0],
+        [0, 0, 2, 0],
+        [0, 0, 0, 1],  # edge 2->3 blocked
+        [0, 0, 0, 0],
+    ]
+    edge_states_2 = [
+        [0, 2, 0, 0],
+        [0, 0, 2, 0],
+        [0, 0, 0, 1],
+        [0, 0, 0, 0],
+    ]
 
-    result = await _run_verifier_test_helper([grid_1, grid_2], path, is_graph=True)
+    graph_1 = _graph_from_edge_states(edge_states_1)
+    graph_2 = _graph_from_edge_states(edge_states_2)
+
+    result = await _run_verifier_test_helper([graph_1, graph_2], path, is_graph=True)
     assert result.is_solved, "Graph path should be safe (avoids hazardous edge 2->3)"
-    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+    assert result.information_gain is not None
+    assert (
+        result.information_gain > 0
+    ), "Information gain should be positive for verifier"
 
 
 @pytest.mark.asyncio
@@ -505,26 +606,28 @@ async def test_join_computation_verifier_graph_unsafe():
     # Path: 0 -> 1 -> 2 -> 3 (includes edge 2->3 which is hazardous)
     path = GraphPath(start=v0, moves=[e01, e12, e23])
 
-    grid_1 = Grid(
-        [
-            [0, 0, 0, 0],
-            [0, 0, 0, 0],
-            [0, 0, 0, 1],  # edge 2->3 hazardous
-            [0, 0, 0, 0],
-        ]
-    )
-    grid_2 = Grid(
-        [
-            [0, 0, 0, 0],
-            [0, 0, 0, 0],
-            [0, 0, 0, 1],
-            [0, 0, 0, 0],
-        ]
-    )
+    edge_states_1 = [
+        [0, 2, 0, 0],
+        [0, 0, 2, 0],
+        [0, 0, 0, 1],  # edge 2->3 blocked
+        [0, 0, 0, 0],
+    ]
+    edge_states_2 = [
+        [0, 2, 0, 0],
+        [0, 0, 2, 0],
+        [0, 0, 0, 1],
+        [0, 0, 0, 0],
+    ]
 
-    result = await _run_verifier_test_helper([grid_1, grid_2], path, is_graph=True)
+    graph_1 = _graph_from_edge_states(edge_states_1)
+    graph_2 = _graph_from_edge_states(edge_states_2)
+
+    result = await _run_verifier_test_helper([graph_1, graph_2], path, is_graph=True)
     assert not result.is_solved, "Path should be unsafe (has hazards)"
-    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+    assert result.information_gain is not None
+    assert (
+        result.information_gain > 0
+    ), "Information gain should be positive for verifier"
 
 
 @pytest.mark.asyncio
@@ -556,41 +659,41 @@ async def test_join_computation_verifier_graph_complex():
     # Unsafe path: 0 -> 1 -> 2 -> 3 (uses hazardous edges on the main chain)
     unsafe_path = GraphPath(start=v0, moves=[e01, e12, e23])
 
-    # Hazard matrix: 6x6, hazard_matrix[u][v] = 1 means hazardous edge (u -> v)
-    # Make edges (1,2) and (2,3) hazardous in both directions; all others safe.
+    # Graph edge-state matrix: 2=traversable, 1=blocked, 0=no edge.
+    # Make safe-path edges traversable and main-chain hazardous edges blocked.
     size = 6
     base_rows = [[0] * size for _ in range(size)]
     # Copy base_rows for each grid; we'll set hazards explicitly.
     grid_data_1 = [row[:] for row in base_rows]
     grid_data_2 = [row[:] for row in base_rows]
 
-    # Mark hazardous edges on the main chain in both directions
+    # Mark traversable edges used by the safe path 0->1->4->5
     for g in (grid_data_1, grid_data_2):
-        g[1][2] = 1  # 1 -> 2 hazardous
-        g[2][1] = 1  # 2 -> 1 hazardous
-        g[2][3] = 1  # 2 -> 3 hazardous
-        g[3][2] = 1  # 3 -> 2 hazardous
+        g[0][1] = 2
+        g[1][4] = 2
+        g[4][5] = 2
+        # Mark blocked edges on main chain used by unsafe path
+        g[1][2] = 1
+        g[2][3] = 1
 
-    grid_1 = Grid(grid_data_1)
-    grid_2 = Grid(grid_data_2)
+    graph_1 = _graph_from_edge_states(grid_data_1)
+    graph_2 = _graph_from_edge_states(grid_data_2)
 
     # Safe path should avoid all hazardous edges
     result_safe = await _run_verifier_test_helper(
-        [grid_1, grid_2], safe_path, is_graph=True
+        [graph_1, graph_2], safe_path, is_graph=True
     )
     assert result_safe.is_solved, "Complex graph safe_path should be reported safe"
-    assert (
-        result_safe.information_gain == 0.0
-    ), "Information gain should be 0.0 for verifier"
+    assert result_safe.information_gain is not None
+    assert result_safe.information_gain > 0
 
     # Unsafe path should traverse hazardous edges and be reported unsafe
     result_unsafe = await _run_verifier_test_helper(
-        [grid_1, grid_2], unsafe_path, is_graph=True
+        [graph_1, graph_2], unsafe_path, is_graph=True
     )
     assert not result_unsafe.is_solved, "Complex graph unsafe_path should be unsafe"
-    assert (
-        result_unsafe.information_gain == 0.0
-    ), "Information gain should be 0.0 for verifier"
+    assert result_unsafe.information_gain is not None
+    assert result_unsafe.information_gain > 0
 
 
 @pytest.mark.asyncio
@@ -622,18 +725,29 @@ async def test_join_computation_verifier_graph_complex_all_safe():
     # 0 -> 1 -> 2 -> 3 -> 2 -> 5
     safe_complex_path = GraphPath(start=v0, moves=[e01, e12, e23, e32, e25])
 
-    # Hazard matrix: 6x6, all zeros -> all edges are safe
+    # Graph edge-state matrix: initialize no-edge (0) then mark traversable edges (2)
     size = 6
-    grid_1 = Grid([[0] * size for _ in range(size)])
-    grid_2 = Grid([[0] * size for _ in range(size)])
+    grid_data_1 = [[0] * size for _ in range(size)]
+    grid_data_2 = [[0] * size for _ in range(size)]
+    for g in (grid_data_1, grid_data_2):
+        g[0][1] = 2
+        g[1][2] = 2
+        g[2][3] = 2
+        g[3][2] = 2
+        g[2][5] = 2
+    graph_1 = _graph_from_edge_states(grid_data_1)
+    graph_2 = _graph_from_edge_states(grid_data_2)
 
     result = await _run_verifier_test_helper(
-        [grid_1, grid_2], safe_complex_path, is_graph=True
+        [graph_1, graph_2], safe_complex_path, is_graph=True
     )
     assert (
         result.is_solved
     ), "Complex all-safe graph path should be reported safe by verifier"
-    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+    assert result.information_gain is not None
+    assert (
+        result.information_gain > 0
+    ), "Information gain should be positive for verifier"
 
 
 @pytest.mark.asyncio
@@ -647,7 +761,10 @@ async def test_join_computation_verifier_partial_hazard():
     result = await _run_verifier_test_helper([grid_1, grid_2], path_1)
     # Path should be unsafe because it hits a hazard at (0,1)
     assert not result.is_solved, "Path should be unsafe (hits hazard at (0,1))"
-    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+    assert result.information_gain is not None
+    assert (
+        result.information_gain > 0
+    ), "Information gain should be positive for verifier"
 
 
 @pytest.mark.asyncio
@@ -681,7 +798,34 @@ async def test_join_computation_verifier_5x5():
 
     result = await _run_verifier_test_helper([grid_1, grid_2], path_1)
     assert result.is_solved, "Path should be safe (avoids all hazards)"
-    assert result.information_gain == 0.0, "Information gain should be 0.0 for verifier"
+    assert result.information_gain is not None
+    assert (
+        result.information_gain > 0
+    ), "Information gain should be positive for verifier"
+
+
+@pytest.mark.asyncio
+async def test_join_computation_verifier_info_gain_safe_and_unsafe():
+    """Run both solved and unsolved verifier paths and assert positive information gain."""
+    safe_grid_1 = Grid([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+    safe_grid_2 = Grid([[0, 0, 0], [0, 0, 0], [0, 0, 0]])
+    safe_path = Path(start=(0, 0), moves=[(1, 0), (1, 0)])
+    safe_result = await _run_verifier_test_helper(
+        [safe_grid_1, safe_grid_2], safe_path, iteration_no=0
+    )
+    assert safe_result.is_solved
+    assert safe_result.information_gain is not None
+    assert safe_result.information_gain > 0
+
+    unsafe_grid_1 = Grid([[1, 0, 0], [1, 0, 0], [1, 0, 0]])
+    unsafe_grid_2 = Grid([[1, 0, 0], [1, 0, 0], [1, 0, 0]])
+    unsafe_path = Path(start=(0, 0), moves=[(1, 0), (1, 0)])
+    unsafe_result = await _run_verifier_test_helper(
+        [unsafe_grid_1, unsafe_grid_2], unsafe_path, iteration_no=0
+    )
+    assert not unsafe_result.is_solved
+    assert unsafe_result.information_gain is not None
+    assert unsafe_result.information_gain > 0
 
 
 def test_graph_str_simple():
@@ -697,7 +841,7 @@ def test_graph_str_simple():
     result = str(graph)
 
     # Adjacency list: v0 connects to v1, v1 connects to v0 and v2, v2 connects to v1
-    expected = "0 1 0 \n1 0 1 \n0 1 0"
+    expected = "0 2 0 \n2 0 2 \n0 2 0"
     assert result == expected, f"Expected '{expected}', got '{result}'"
 
 
@@ -727,8 +871,8 @@ def test_graph_str_complete_graph():
     graph = Graph(vertices=[v0, v1, v2], edges=[e01, e02, e12])
     result = str(graph)
 
-    # Complete graph: all off-diagonal entries are 1, diagonal entries are 0
-    expected = "0 1 1 \n1 0 1 \n1 1 0"
+    # Complete graph: all off-diagonal entries are 2 (traversable), diagonal entries are 0
+    expected = "0 2 2 \n2 0 2 \n2 2 0"
     assert result == expected, f"Expected '{expected}', got '{result}'"
 
 
@@ -815,29 +959,26 @@ async def test_graph_path_sat():
     # Create a path: 0 -> 1 -> 2 (uses edges (0,1) and (1,2))
     path = GraphPath(start=v0, moves=[e01, e12])
 
-    # In graph mode, grid represents adjacency matrix where grid[i][j] = 1 means safe edge from i to j
+    # In graph mode, grid[i][j] = 2 means traversable edge; 0/1 are non-traversable.
     # For 4 vertices, we need a 4x4 grid
-    # Path uses edges (0,1) and (1,2), so make those safe (1) and others can be dangerous (0)
-    # grid[0][1] = 1 (safe edge 0->1), grid[1][2] = 1 (safe edge 1->2)
-    grid_1 = Grid(
-        [
-            [0, 1, 0, 0],  # vertex 0: safe edge to 1
-            [1, 0, 1, 0],  # vertex 1: safe edges to 0 and 2
-            [0, 1, 0, 0],  # vertex 2: safe edge to 1
-            [0, 0, 0, 0],  # vertex 3: no safe edges
-        ]
-    )
-    grid_2 = Grid(
-        [
-            [0, 1, 0, 0],
-            [1, 0, 1, 0],
-            [0, 1, 0, 0],
-            [0, 0, 0, 0],
-        ]
-    )
+    # Path uses edges (0,1) and (1,2), so make those traversable (2).
+    edge_states_1 = [
+        [0, 2, 0, 0],  # vertex 0: traversable edge to 1
+        [0, 0, 2, 0],  # vertex 1: traversable edge to 2
+        [0, 0, 0, 0],  # vertex 2
+        [0, 0, 0, 0],  # vertex 3
+    ]
+    edge_states_2 = [
+        [0, 2, 0, 0],
+        [0, 0, 2, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ]
+    graph_1 = _graph_from_edge_states(edge_states_1)
+    graph_2 = _graph_from_edge_states(edge_states_2)
 
     result = await _run_sat_test_helper(
-        [grid_1, grid_2], path, iteration_no=0, is_graph=True
+        [graph_1, graph_2], path, iteration_no=0, is_graph=True
     )
     assert result.is_solved, "Path should be SAT (safe, avoids dangerous vertex 3)"
     assert result.information_gain > 0, "Information gain should be positive"
@@ -860,34 +1001,119 @@ async def test_graph_path_unsat():
     # Create a path: 0 -> 1 -> 2 -> 3 (uses edges (0,1), (1,2), and (2,3))
     path = GraphPath(start=v0, moves=[e01, e12, e23])
 
-    # In graph mode, grid represents adjacency matrix where grid[i][j] = 1 means safe edge from i to j
+    # In graph mode, grid[i][j] = 2 means traversable edge; 0/1 are non-traversable.
     # For 4 vertices, we need a 4x4 grid
     # Path uses edges (0,1), (1,2), and (2,3)
-    # Make edge (2,3) dangerous (0) so the path is unsafe
-    grid_1 = Grid(
-        [
-            [0, 1, 0, 0],  # vertex 0: safe edge to 1
-            [1, 0, 1, 0],  # vertex 1: safe edges to 0 and 2
-            [0, 1, 0, 0],  # vertex 2: safe edge to 1, but NOT to 3 (dangerous)
-            [0, 0, 0, 0],  # vertex 3: no safe edges
-        ]
-    )
-    grid_2 = Grid(
-        [
-            [0, 1, 0, 0],
-            [1, 0, 1, 0],
-            [0, 1, 0, 0],  # edge 2->3 is dangerous (0)
-            [0, 0, 0, 0],
-        ]
-    )
+    # Make edge (2,3) blocked (1) so the path is unsafe
+    edge_states_1 = [
+        [0, 2, 0, 0],  # vertex 0: traversable edge to 1
+        [0, 0, 2, 0],  # vertex 1: traversable edge to 2
+        [0, 0, 0, 1],  # vertex 2: edge to 3 exists but blocked
+        [0, 0, 0, 0],  # vertex 3
+    ]
+    edge_states_2 = [
+        [0, 2, 0, 0],
+        [0, 0, 2, 0],
+        [0, 0, 0, 1],  # edge 2->3 blocked
+        [0, 0, 0, 0],
+    ]
+    graph_1 = _graph_from_edge_states(edge_states_1)
+    graph_2 = _graph_from_edge_states(edge_states_2)
 
     result = await _run_sat_test_helper(
-        [grid_1, grid_2], path, iteration_no=0, is_graph=True
+        [graph_1, graph_2], path, iteration_no=0, is_graph=True
     )
     assert (
         not result.is_solved
     ), "Path should be UNSAT (unsafe, goes through dangerous vertex 3)"
     assert result.information_gain > 0, "Information gain should be positive"
+
+
+@pytest.mark.asyncio
+async def test_verifier_graph_edge_state_mix_safe_and_unsafe_pair():
+    """Verifier pair test using mixed edge states (2 traversable, 1 blocked, 0 no-edge)."""
+    # Graph nodes: 0,1,2,3,4
+    # Safe path uses traversable edges: 0->1->4
+    # Unsafe path uses one blocked edge: 0->1->2
+    v0 = Vertex(id=0)
+    v1 = Vertex(id=1)
+    v2 = Vertex(id=2)
+    v4 = Vertex(id=4)
+
+    safe_path = GraphPath(
+        start=v0, moves=[Edge(vertex1=v0, vertex2=v1), Edge(vertex1=v1, vertex2=v4)]
+    )
+    unsafe_path = GraphPath(
+        start=v0, moves=[Edge(vertex1=v0, vertex2=v1), Edge(vertex1=v1, vertex2=v2)]
+    )
+
+    size = 5
+    grid_data_1 = [[int(EdgeState.NO_EDGE)] * size for _ in range(size)]
+    grid_data_2 = [[int(EdgeState.NO_EDGE)] * size for _ in range(size)]
+
+    # traversable edges
+    for g in (grid_data_1, grid_data_2):
+        g[0][1] = int(EdgeState.TRAVERSABLE)
+        g[1][4] = int(EdgeState.TRAVERSABLE)
+        # blocked edge
+        g[1][2] = int(EdgeState.BLOCKED)
+        # keep at least one explicit no-edge relation
+        g[2][3] = int(EdgeState.NO_EDGE)
+
+    graph_1 = _graph_from_edge_states(grid_data_1)
+    graph_2 = _graph_from_edge_states(grid_data_2)
+
+    result_safe = await _run_verifier_test_helper(
+        [graph_1, graph_2], safe_path, is_graph=True
+    )
+    assert result_safe.is_solved, "Safe path should verify with mixed edge states"
+
+    result_unsafe = await _run_verifier_test_helper(
+        [graph_1, graph_2], unsafe_path, is_graph=True
+    )
+    assert not result_unsafe.is_solved, "Blocked-edge path should not verify"
+
+
+@pytest.mark.asyncio
+async def test_private_query_graph_edge_state_mix_sat_and_unsat_pair():
+    """private_path_query SAT/UNSAT pair test using mixed edge states."""
+    # Graph nodes: 0,1,2,3,4
+    # SAT path uses only traversable edges: 0->1->4
+    # UNSAT path uses blocked edge: 0->1->2
+    v0 = Vertex(id=0)
+    v1 = Vertex(id=1)
+    v2 = Vertex(id=2)
+    v4 = Vertex(id=4)
+
+    sat_path = GraphPath(
+        start=v0, moves=[Edge(vertex1=v0, vertex2=v1), Edge(vertex1=v1, vertex2=v4)]
+    )
+    unsat_path = GraphPath(
+        start=v0, moves=[Edge(vertex1=v0, vertex2=v1), Edge(vertex1=v1, vertex2=v2)]
+    )
+
+    size = 5
+    grid_data_1 = [[int(EdgeState.NO_EDGE)] * size for _ in range(size)]
+    grid_data_2 = [[int(EdgeState.NO_EDGE)] * size for _ in range(size)]
+
+    for g in (grid_data_1, grid_data_2):
+        g[0][1] = int(EdgeState.TRAVERSABLE)
+        g[1][4] = int(EdgeState.TRAVERSABLE)
+        g[1][2] = int(EdgeState.BLOCKED)
+        g[2][3] = int(EdgeState.NO_EDGE)
+
+    graph_1 = _graph_from_edge_states(grid_data_1)
+    graph_2 = _graph_from_edge_states(grid_data_2)
+
+    result_sat = await _run_sat_test_helper(
+        [graph_1, graph_2], sat_path, iteration_no=0, is_graph=True
+    )
+    assert result_sat.is_solved, "Traversable-edge path should be SAT"
+
+    result_unsat = await _run_sat_test_helper(
+        [graph_1, graph_2], unsat_path, iteration_no=0, is_graph=True
+    )
+    assert not result_unsat.is_solved, "Blocked-edge path should be UNSAT"
 
 
 if __name__ == "__main__":
