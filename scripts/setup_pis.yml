@@ -7,7 +7,6 @@
     ansible_python_interpreter: /usr/bin/python3
     repo_url: "https://github.com/jmayhugh1/aima-python-matsat.git"
     repo_dest: "/home/{{ ansible_user }}/aima-python-matsat"
-    setup_script: "setup_mpspdz_on_pi.py"
 
   tasks:
     - name: Bootstrap python packaging (required for Ansible modules)
@@ -39,6 +38,8 @@
           - wget
         state: present
         update_cache: yes
+        cache_valid_time: 3600
+        lock_timeout: 300
       become: yes
 
     - name: Clone repo
@@ -58,10 +59,19 @@
         recurse: yes
       become: yes
 
+    - name: Explicitly pull latest changes from remote
+      ansible.builtin.shell:
+        cmd: "git pull"
+        chdir: "{{ repo_dest }}"
+
     - name: Update submodules with remote
       ansible.builtin.shell:
-        cmd: "git submodule update --recursive --remote"
+        cmd: "git submodule update --init --recursive --remote --jobs 4 --depth 1"
         chdir: "{{ repo_dest }}"
+      register: submodule_update
+      retries: 5
+      delay: 10
+      until: submodule_update.rc == 0
 
     - name: Clean MP-SPDZ CONFIG.mine
       ansible.builtin.file:
@@ -97,8 +107,12 @@
 
     - name: Initialize libOTe submodule
       ansible.builtin.shell:
-        cmd: "git submodule update --init --recursive deps/libOTe"
+        cmd: "git submodule update --init --recursive --jobs 4 --depth 1 deps/libOTe"
         chdir: "{{ repo_dest }}/MP-SPDZ"
+      register: libote_update
+      retries: 5
+      delay: 10
+      until: libote_update.rc == 0
 
     - name: Ensure Boost directory exists
       ansible.builtin.file:
@@ -128,6 +142,8 @@
       ansible.builtin.shell:
         cmd: "./Scripts/setup-ssl.sh"
         chdir: "{{ repo_dest }}/MP-SPDZ"
+      args:
+        creates: "{{ repo_dest }}/MP-SPDZ/Player-Data/P0.key"
 
     - name: Compile Mascot Protocol
       ansible.builtin.shell:
@@ -136,7 +152,7 @@
       args:
         creates: "{{ repo_dest }}/MP-SPDZ/mascot-party.x"
       async: 7200
-      poll: 60
+      poll: 10
 
     - name: Compile Shamir Protocol
       ansible.builtin.shell:
@@ -145,4 +161,4 @@
       args:
         creates: "{{ repo_dest }}/MP-SPDZ/shamir-party.x"
       async: 7200
-      poll: 60
+      poll: 10
