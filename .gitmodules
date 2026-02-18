@@ -4,4 +4,4 @@
 [submodule "MP-SPDZ"]
 	path = MP-SPDZ
 	url = https://github.com/jmayhugh1/MP-SPDZ.git
-	branch = adding-matsat-subproc
+	branch = master
