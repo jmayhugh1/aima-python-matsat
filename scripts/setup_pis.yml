@@ -1,0 +1,148 @@
+---
+- name: Setup Raspberry Pi clusters for distributed MPC path planning
+  hosts: pis
+  become: no
+
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    repo_url: "https://github.com/jmayhugh1/aima-python-matsat.git"
+    repo_dest: "/home/{{ ansible_user }}/aima-python-matsat"
+    setup_script: "setup_mpspdz_on_pi.py"
+
+  tasks:
+    - name: Bootstrap python packaging (required for Ansible modules)
+      ansible.builtin.raw: sudo apt-get update && sudo apt-get install -y python3-packaging
+      changed_when: false
+      become: yes
+
+    - name: Ensure system dependencies are installed
+      ansible.builtin.apt:
+        name:
+          - git
+          - python3
+          - python3-pip
+          - automake
+          - build-essential
+          - clang
+          - cmake
+          - libboost-dev
+          - libboost-thread-dev
+          - libclang-dev
+          - libgmp-dev
+          - libntl-dev
+          - libsodium-dev
+          - libssl-dev
+          - libtool
+          - vim
+          - gdb
+          - valgrind
+          - wget
+        state: present
+        update_cache: yes
+      become: yes
+
+    - name: Clone repo
+      ansible.builtin.git:
+        repo: "{{ repo_url }}"
+        dest: "{{ repo_dest }}"
+        version: mat_sat
+        update: yes
+        force: yes
+
+    - name: Ensure repo ownership is correct
+      ansible.builtin.file:
+        path: "{{ repo_dest }}"
+        state: directory
+        owner: "{{ ansible_user }}"
+        group: "{{ ansible_user }}"
+        recurse: yes
+      become: yes
+
+    - name: Update submodules with remote
+      ansible.builtin.shell:
+        cmd: "git submodule update --recursive --remote"
+        chdir: "{{ repo_dest }}"
+
+    - name: Clean MP-SPDZ CONFIG.mine
+      ansible.builtin.file:
+        path: "{{ repo_dest }}/MP-SPDZ/CONFIG.mine"
+        state: absent
+
+    - name: Disable -Werror in MP-SPDZ CONFIG
+      ansible.builtin.replace:
+        path: "{{ repo_dest }}/MP-SPDZ/CONFIG"
+        regexp: ' -Werror'
+        replace: ''
+
+    - name: Configure MP-SPDZ compilation flags
+      ansible.builtin.blockinfile:
+        path: "{{ repo_dest }}/MP-SPDZ/CONFIG.mine"
+        create: yes
+        block: |
+          ARCH = -march=native
+          CXX = clang++
+          USE_NTL = 0
+          MY_CFLAGS += -I/usr/local/include
+          MY_LDLIBS += -Wl,-rpath -Wl,/usr/local/lib -L/usr/local/lib
+        marker: "# {mark} ANSIBLE MANAGED BLOCK for MP-SPDZ CONFIG.mine"
+
+    - name: Install Python dependencies
+      ansible.builtin.pip:
+        name:
+          - pip
+          - ipython
+        state: latest
+        executable: pip3
+        extra_args: "--break-system-packages"
+
+    - name: Initialize libOTe submodule
+      ansible.builtin.shell:
+        cmd: "git submodule update --init --recursive deps/libOTe"
+        chdir: "{{ repo_dest }}/MP-SPDZ"
+
+    - name: Ensure Boost directory exists
+      ansible.builtin.file:
+        path: "{{ repo_dest }}/MP-SPDZ/deps/libOTe/cryptoTools/thirdparty"
+        state: directory
+        mode: '0755'
+
+    - name: Check if Boost archive exists
+      ansible.builtin.stat:
+        path: "{{ repo_dest }}/MP-SPDZ/deps/libOTe/cryptoTools/thirdparty/boost_1_83_0.tar.bz2"
+      register: boost_archive
+
+    - name: Download Boost 1.83.0
+      ansible.builtin.get_url:
+        url: "https://sourceforge.net/projects/boost/files/boost/1.83.0/boost_1_83_0.tar.bz2/download"
+        dest: "{{ repo_dest }}/MP-SPDZ/deps/libOTe/cryptoTools/thirdparty/boost_1_83_0.tar.bz2"
+      when: not boost_archive.stat.exists
+
+    - name: Compile dependencies (Boost, libOTe)
+      ansible.builtin.shell:
+        cmd: "make clean-deps boost libote ARM=1"
+        chdir: "{{ repo_dest }}/MP-SPDZ"
+      args:
+        creates: "{{ repo_dest }}/MP-SPDZ/local/lib/liblibOTe.a"
+
+    - name: Generate SSL keys
+      ansible.builtin.shell:
+        cmd: "./Scripts/setup-ssl.sh"
+        chdir: "{{ repo_dest }}/MP-SPDZ"
+
+    - name: Compile Mascot Protocol
+      ansible.builtin.shell:
+        cmd: "make mascot-party.x ARM=1 -j2"
+        chdir: "{{ repo_dest }}/MP-SPDZ"
+      args:
+        creates: "{{ repo_dest }}/MP-SPDZ/mascot-party.x"
+      async: 7200
+      poll: 60
+
+    - name: Compile Shamir Protocol
+      ansible.builtin.shell:
+        cmd: "make shamir-party.x ARM=1 -j2"
+        chdir: "{{ repo_dest }}/MP-SPDZ"
+      args:
+        creates: "{{ repo_dest }}/MP-SPDZ/shamir-party.x"
+      async: 7200
+      poll: 60
