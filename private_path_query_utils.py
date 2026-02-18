@@ -46,14 +46,17 @@ GraphSpot = Literal[0, 1, 2]
 
 class EdgeState(IntEnum):
     """
-    NO_EDGE means will never become traversable.
-    BLOCKED means MAY become traversable.
-    TRAVERSABLE means can be traversed.
+    NO_EDGE means no edge exists.
+    BLOCKED means edge exists but is not traversable.
+    TRAVERSABLE means edge exists and is traversable.
+    UNKNOWN is a public-domain marker used only for candidate edge domains;
+    it must not be used in Bob's private graph adjacency payload.
     """
 
     NO_EDGE = 0
     BLOCKED = 1
     TRAVERSABLE = 2
+    UNKNOWN = 3
 
 
 class Protocol(Enum):
@@ -232,6 +235,11 @@ class Graph(Environment):
                 )
             for edge in self.edges:
                 state_val = int(edge.state)
+                if state_val == int(EdgeState.UNKNOWN):
+                    raise ValueError(
+                        "EdgeState.UNKNOWN is for public edge-domain metadata only, "
+                        "not Graph adjacency state."
+                    )
                 i, j = edge.vertex1.id, edge.vertex2.id
                 # If the same edge is listed multiple times, keep the most permissive state.
                 self.adjacency_list[i][j] = max(self.adjacency_list[i][j], state_val)
@@ -322,6 +330,8 @@ class PrivatePathInfo:
     V: int
     rows_per_id: List[int]
     use_weight_vector: bool = False
+    use_edge_domain: bool = False
+    edge_domain_edges: List[Edge] | None = None
 
     def __post_init__(self):
         if self.num_parties < 1:
@@ -334,16 +344,62 @@ class PrivatePathInfo:
             raise ValueError("rows_per_id length must match num_parties")
         if any(rows < 1 for rows in self.rows_per_id):
             raise ValueError("rows_per_id must contain positive values")
+        if self.use_edge_domain and self.edge_domain_edges is None:
+            raise ValueError(
+                "use_edge_domain=True requires edge_domain_edges with UNKNOWN states"
+            )
+        if self.edge_domain_edges:
+            for edge in self.edge_domain_edges:
+                if edge.state != EdgeState.UNKNOWN:
+                    raise ValueError(
+                        "edge_domain_edges must use EdgeState.UNKNOWN to avoid leaking Bob states"
+                    )
+                for v in (edge.vertex1.id, edge.vertex2.id):
+                    if not (0 <= v < self.V):
+                        raise ValueError(
+                            "edge_domain_edges vertex id out of range for V"
+                        )
+
+    def edge_domain_pairs(self) -> List[tuple[int, int]] | None:
+        """Return deterministic directed pairs used for compact symbol domains."""
+        if not self.use_edge_domain or not self.edge_domain_edges:
+            return None
+        from private_path_query_logic import directed_pairs_from_edges
+
+        return directed_pairs_from_edges(self.edge_domain_edges, self.V)
 
     @classmethod
     def from_dict(cls, config: dict) -> "PrivatePathInfo":
         """Build from a dict (e.g., parsed JSON)."""
+        V = int(config["V"])
+        domain_edges_cfg = config.get("edge_domain_edges") or config.get(
+            "edge_domain_pairs"
+        )
+        domain_edges: List[Edge] | None = None
+        if domain_edges_cfg:
+            domain_edges = []
+            for entry in domain_edges_cfg:
+                if isinstance(entry, dict):
+                    u = int(entry["u"])
+                    v = int(entry["v"])
+                else:
+                    u = int(entry[0])
+                    v = int(entry[1])
+                domain_edges.append(
+                    Edge(
+                        vertex1=Vertex(u),
+                        vertex2=Vertex(v),
+                        state=EdgeState.UNKNOWN,
+                    )
+                )
         return cls(
             num_parties=int(config["num_parties"]),
             T=int(config["T"]),
-            V=int(config["V"]),
+            V=V,
             rows_per_id=[int(v) for v in config["rows_per_id"]],
             use_weight_vector=bool(config.get("use_weight_vector", False)),
+            use_edge_domain=bool(config.get("use_edge_domain", False)),
+            edge_domain_edges=domain_edges,
         )
 
     @classmethod
@@ -559,7 +615,10 @@ async def compile_find_safe_path(
     # Local import to avoid circular dependency at module import time.
     from private_path_query_logic import ordered_symbols
 
-    num_vars = len(ordered_symbols(T, V))
+    directed_pairs = (
+        private_path_info.edge_domain_pairs() if private_path_info is not None else None
+    )
+    num_vars = len(ordered_symbols(T, V, directed_pairs=directed_pairs))
 
     if num_parties is None or num_parties < 1:
         raise ValueError("num_parties must be >= 1")
@@ -820,8 +879,8 @@ async def join_computation_find_safe_path(
     Dedicated join path for FIND_SAFE_PATH (matsat).
 
     Party roles:
-      - Alice (id=0): sends q_alice built from (start, goal, T, V)
-      - Bob (id>0): sends [q_physics ; q_bob] built from (graph, T, V)
+      - Alice (id=0): sends [q_physics ; q_alice] built from (start, goal, T, V)
+      - Bob (id>0): sends q_bob built from (graph, T, V)
     """
     if private_path_info.T is None or private_path_info.V is None:
         raise ValueError("private_path_info must include T and V")
@@ -842,19 +901,23 @@ async def join_computation_find_safe_path(
         build_alice_q,
     )
 
-    syms = ordered_symbols(T, V)
-    q_physics = build_physics_q(T, V, symbols=syms)
+    directed_pairs = private_path_info.edge_domain_pairs()
+    syms = ordered_symbols(T, V, directed_pairs=directed_pairs)
+    q_physics = build_physics_q(T, V, symbols=syms, directed_pairs=directed_pairs)
 
     if id == 0:
         if start is None or goal is None:
             raise ValueError("Alice party (id=0) requires start and goal")
-        q_party = build_alice_q(start.id, goal.id, T, V, symbols=syms)
+        q_alice = build_alice_q(start.id, goal.id, T, V, symbols=syms)
+        q_party = np.concatenate([q_physics, q_alice], axis=0)
     else:
         if graph is None:
             raise ValueError("Bob parties (id>0) require graph input")
         bob_edges = graph.to_directed_edges()
-        q_bob = build_bob_q(bob_edges, T, V, symbols=syms)
-        q_party = np.concatenate([q_physics, q_bob], axis=0)
+        q_bob = build_bob_q(
+            bob_edges, T, V, symbols=syms, directed_pairs=directed_pairs
+        )
+        q_party = q_bob
 
     if compile_program and id == 0:
         ok = await compile_find_safe_path(

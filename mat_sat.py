@@ -4,6 +4,7 @@ from logic4e import (
     to_cnf,
     conjuncts,
     prop_symbols,
+    pl_true,
     dpll_satisfiable,
     get_all_ordered_symbols,
 )
@@ -28,7 +29,6 @@ QMAT_DIR = "qmat-mat-encodings"
 _port_finding_lock = threading.Lock()
 
 # ---------- helpers: build instance matrices ----------
-
 
 
 def _clause_literals(cl: Expr) -> List[Expr]:
@@ -261,7 +261,9 @@ def _parse_is_solved_from_output(output: str) -> bool:
 def _parse_assignment_from_output(
     output: str, symbols: Sequence[Expr] | None = None
 ) -> dict[Expr, bool] | None:
-    # Matches lines like 'u[0] = 1' (possibly prefixed by party info)
+    # Matches lines like 'u[0] = 1' (possibly prefixed by party info).
+    # Note: u is the binary assignment vector of length n (number of symbols).
+    # The dual vector u_d has length 2n but is internal to the solver.
     assignments: dict[int, bool] = {}
 
     for match in re.finditer(r"u\[(\d+)\]\s*=\s*(-?\d+)", output):
@@ -281,6 +283,33 @@ def _parse_assignment_from_output(
 
     # Fallback to placeholder variable names
     return {expr(f"u{idx}"): val for idx, val in sorted(assignments.items())}
+
+
+def assignment_from_u_vector(
+    u_vector: Sequence[int | bool], symbols: Sequence[Expr]
+) -> dict[Expr, bool]:
+    """Map a binary u vector (length n) to {symbol: bool}."""
+    if len(u_vector) != len(symbols):
+        raise ValueError(
+            f"u vector length {len(u_vector)} must equal symbol count {len(symbols)}"
+        )
+    return {sym: bool(u_vector[i]) for i, sym in enumerate(symbols)}
+
+
+def clause_satisfaction_from_assignment(
+    formulas: Sequence[Expr], assignment: Mapping[Expr, bool]
+) -> dict[Expr, bool]:
+    """
+    Return per-clause satisfaction in CNF space.
+
+    Output maps each CNF clause Expr -> bool under the given assignment.
+    """
+    results: dict[Expr, bool] = {}
+    model = dict(assignment)
+    for formula in formulas:
+        for clause in conjuncts(to_cnf(formula)):
+            results[clause] = bool(pl_true(clause, model))
+    return results
 
 
 def _write_qmat_files(

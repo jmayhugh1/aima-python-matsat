@@ -1,5 +1,7 @@
 import pytest
 import asyncio
+import time
+import os
 from logic4e import dpll_satisfiable
 from utils4e import Expr
 from private_path_query_logic import (
@@ -11,6 +13,7 @@ from private_path_query_logic import (
     At,
     Active,
     Allowed,
+    directed_pairs_from_edges,
     ordered_symbols,
     assignment_from_u_vector,
     build_q,
@@ -70,11 +73,29 @@ def _print_sat_moves(model, T: int, V: int):
     print(f"SAT action timeline: {timeline}")
 
 
-def _print_assignments_from_u_vector(u_vector: list[int], T: int, V: int):
-    model = assignment_from_u_vector(u_vector=u_vector, T=T, V=V)
+def _print_assignments_from_u_vector(
+    u_vector: list[int], T: int, V: int, symbols: list[Expr] | None = None
+):
+    model = assignment_from_u_vector(u_vector=u_vector, T=T, V=V, symbols=symbols)
     true_symbols = sorted(str(sym) for sym, val in model.items() if val)
     print(f"Decoded TRUE assignments: {true_symbols}")
     _print_sat_moves(model, T, V)
+
+
+def _resolve_mode(mode: str | None = None) -> str | None:
+    """
+    Optional test mode selector.
+    - None/empty => run both (default behavior)
+    - 'baseline' => run baseline only
+    - 'optimized' => run optimized only
+    """
+    selected = mode if mode is not None else os.getenv("FIND_SAFE_PATH_MODE")
+    if selected is None or str(selected).strip() == "":
+        return None
+    selected = str(selected).strip().lower()
+    if selected not in {"baseline", "optimized"}:
+        raise ValueError("mode must be one of: baseline, optimized, or empty")
+    return selected
 
 
 async def _run_find_safe_path_helper(
@@ -84,21 +105,30 @@ async def _run_find_safe_path_helper(
     T: int,
     V: int,
     port: int = 5003,
+    use_edge_domain: bool = False,
+    public_domain_edges: list[Edge] | None = None,
 ) -> ComputationResult:
     """
     Real MPC helper for FIND_SAFE_PATH using shared PrivatePathInfo.
     """
     num_parties = len(graphs) + 1
-    syms = ordered_symbols(T, V)
+    compact_pairs = None
+    if use_edge_domain:
+        domain_edges = public_domain_edges or []
+        compact_pairs = directed_pairs_from_edges(domain_edges, V)
+    syms = ordered_symbols(T, V, directed_pairs=compact_pairs)
     q_alice = build_alice_q(start=start.id, goal=goal.id, T=T, V=V, symbols=syms)
-    q_bob = build_bob_q(edges=[], T=T, V=V, symbols=syms)
-    q_physics = build_physics_q(T=T, V=V, symbols=syms)
-    bob_rows = int(q_physics.shape[0] + q_bob.shape[0])
+    q_bob = build_bob_q(edges=[], T=T, V=V, symbols=syms, directed_pairs=compact_pairs)
+    q_physics = build_physics_q(T=T, V=V, symbols=syms, directed_pairs=compact_pairs)
+    alice_rows = int(q_physics.shape[0] + q_alice.shape[0])
+    bob_rows = int(q_bob.shape[0])
     info = PrivatePathInfo(
         num_parties=num_parties,
         T=T,
         V=V,
-        rows_per_id=[int(q_alice.shape[0])] + [bob_rows] * (num_parties - 1),
+        rows_per_id=[alice_rows] + [bob_rows] * (num_parties - 1),
+        use_edge_domain=use_edge_domain,
+        edge_domain_edges=public_domain_edges,
     )
 
     print("Total Columns in Q Matrix:", len(syms) * 2)
@@ -136,6 +166,65 @@ async def _run_find_safe_path_helper(
     return results[0]
 
 
+def _unknown_domain_edges_from_graph(graph: Graph) -> list[Edge]:
+    """Build public candidate domain edges (UNKNOWN state) from a graph topology."""
+    domain_edges: list[Edge] = []
+    for e in graph.to_directed_edges():
+        domain_edges.append(Edge(e.vertex1, e.vertex2, EdgeState.UNKNOWN))
+    return domain_edges
+
+
+async def _run_find_safe_path_compare_modes(
+    graphs: list[Graph],
+    start: Vertex,
+    goal: Vertex,
+    T: int,
+    V: int,
+    port: int,
+    public_domain_edges: list[Edge] | None = None,
+    mode: str | None = None,
+) -> tuple[ComputationResult | None, ComputationResult | None]:
+    """
+    Run the same scenario twice:
+      1) baseline (full domain)
+      2) optimized (public edge-domain)
+    """
+    selected_mode = _resolve_mode(mode)
+    baseline: ComputationResult | None = None
+    optimized: ComputationResult | None = None
+
+    if selected_mode in (None, "baseline"):
+        baseline = await _run_find_safe_path_helper(
+            graphs=graphs,
+            start=start,
+            goal=goal,
+            T=T,
+            V=V,
+            port=port,
+            use_edge_domain=False,
+        )
+    if selected_mode in (None, "optimized"):
+        domain = public_domain_edges or _unknown_domain_edges_from_graph(graphs[0])
+        optimized = await _run_find_safe_path_helper(
+            graphs=graphs,
+            start=start,
+            goal=goal,
+            T=T,
+            V=V,
+            port=port + 1,
+            use_edge_domain=True,
+            public_domain_edges=domain,
+        )
+
+    print(
+        "MODE_COMPARE "
+        f"mode={selected_mode or 'both'} "
+        f"baseline(solved={None if baseline is None else baseline.is_solved}, sat={None if baseline is None else baseline.satisfied_clauses}) "
+        f"optimized(solved={None if optimized is None else optimized.is_solved}, sat={None if optimized is None else optimized.satisfied_clauses})"
+    )
+    return baseline, optimized
+
+
 def test_private_path_info_from_dict():
     info = PrivatePathInfo.from_dict(
         {
@@ -144,6 +233,8 @@ def test_private_path_info_from_dict():
             "V": 4,
             "rows_per_id": [10, 20, 20],
             "use_weight_vector": True,
+            "use_edge_domain": True,
+            "edge_domain_pairs": [[0, 1], [1, 2]],
         }
     )
     assert info.num_parties == 3
@@ -151,12 +242,15 @@ def test_private_path_info_from_dict():
     assert info.V == 4
     assert info.rows_per_id == [10, 20, 20]
     assert info.use_weight_vector
+    assert info.use_edge_domain
+    assert info.edge_domain_edges is not None
+    assert all(e.state == EdgeState.UNKNOWN for e in info.edge_domain_edges)
 
 
 def test_private_path_info_from_json_file(tmp_path):
     config_path = tmp_path / "private_path_info.json"
     config_path.write_text(
-        '{"num_parties": 3, "T": 1, "V": 2, "rows_per_id": [2, 15, 15]}',
+        '{"num_parties": 3, "T": 1, "V": 2, "rows_per_id": [2, 15, 15], "use_edge_domain": true, "edge_domain_pairs": [[0,1]]}',
         encoding="utf-8",
     )
     info = PrivatePathInfo.from_json_file(str(config_path))
@@ -165,11 +259,27 @@ def test_private_path_info_from_json_file(tmp_path):
     assert info.V == 2
     assert info.rows_per_id == [2, 15, 15]
     assert not info.use_weight_vector
+    assert info.use_edge_domain
+    assert info.edge_domain_edges is not None
+    assert len(info.edge_domain_edges) == 1
+    assert info.edge_domain_edges[0].state == EdgeState.UNKNOWN
 
 
 def test_private_path_info_invalid_rows_length():
     with pytest.raises(ValueError, match="rows_per_id length must match num_parties"):
         PrivatePathInfo(num_parties=3, T=1, V=2, rows_per_id=[2, 15])
+
+
+def test_private_path_info_edge_domain_requires_unknown_edges():
+    with pytest.raises(ValueError, match="UNKNOWN"):
+        PrivatePathInfo(
+            num_parties=3,
+            T=1,
+            V=3,
+            rows_per_id=[2, 10, 10],
+            use_edge_domain=True,
+            edge_domain_edges=[Edge(Vertex(0), Vertex(1), EdgeState.TRAVERSABLE)],
+        )
 
 
 @pytest.mark.asyncio
@@ -179,12 +289,39 @@ async def test_compile_find_safe_path_with_private_path_info_real_compile():
     q_alice = build_alice_q(start=0, goal=0, T=T, V=V, symbols=syms)
     q_bob = build_bob_q(edges=[], T=T, V=V, symbols=syms)
     q_physics = build_physics_q(T=T, V=V, symbols=syms)
-    bob_rows = int(q_physics.shape[0] + q_bob.shape[0])
+    alice_rows = int(q_physics.shape[0] + q_alice.shape[0])
+    bob_rows = int(q_bob.shape[0])
     info = PrivatePathInfo(
         num_parties=3,
         T=T,
         V=V,
-        rows_per_id=[int(q_alice.shape[0]), bob_rows, bob_rows],
+        rows_per_id=[alice_rows, bob_rows, bob_rows],
+    )
+    ok = await compile_find_safe_path(private_path_info=info)
+    assert ok
+
+
+@pytest.mark.asyncio
+async def test_compile_find_safe_path_with_public_edge_domain_real_compile():
+    T, V = 2, 3
+    public_domain_edges = [
+        Edge(Vertex(0), Vertex(1), EdgeState.UNKNOWN),
+        Edge(Vertex(1), Vertex(2), EdgeState.UNKNOWN),
+    ]
+    compact_pairs = directed_pairs_from_edges(public_domain_edges, V)
+    syms = ordered_symbols(T, V, directed_pairs=compact_pairs)
+    q_alice = build_alice_q(start=0, goal=2, T=T, V=V, symbols=syms)
+    q_bob = build_bob_q(edges=[], T=T, V=V, symbols=syms, directed_pairs=compact_pairs)
+    q_physics = build_physics_q(T=T, V=V, symbols=syms, directed_pairs=compact_pairs)
+    alice_rows = int(q_physics.shape[0] + q_alice.shape[0])
+    bob_rows = int(q_bob.shape[0])
+    info = PrivatePathInfo(
+        num_parties=3,
+        T=T,
+        V=V,
+        rows_per_id=[alice_rows, bob_rows, bob_rows],
+        use_edge_domain=True,
+        edge_domain_edges=public_domain_edges,
     )
     ok = await compile_find_safe_path(private_path_info=info)
     assert ok
@@ -371,11 +508,20 @@ async def test_find_safe_path_fat_graph_mixed_states_sat_and_unsat():
         Graph(vertices=vertices, edges=base_edges),
         Graph(vertices=vertices, edges=base_edges),
     ]
-    sat_result = await _run_find_safe_path_helper(
-        graphs=sat_graphs, start=vertices[0], goal=vertices[7], T=6, V=8, port=5005
+    sat_baseline, sat_optimized = await _run_find_safe_path_compare_modes(
+        graphs=sat_graphs,
+        start=vertices[0],
+        goal=vertices[7],
+        T=6,
+        V=8,
+        port=5005,
     )
-    assert sat_result.is_solved
-    assert sat_result.information_gain == 0.0
+    if sat_baseline is not None:
+        assert sat_baseline.is_solved
+        assert sat_baseline.information_gain == 0.0
+    if sat_optimized is not None:
+        assert sat_optimized.is_solved
+        assert sat_optimized.information_gain == 0.0
 
     # UNSAT graph pair: break the only backbone route to goal.
     unsat_edges = [
@@ -390,11 +536,20 @@ async def test_find_safe_path_fat_graph_mixed_states_sat_and_unsat():
         Graph(vertices=vertices, edges=unsat_edges),
         Graph(vertices=vertices, edges=unsat_edges),
     ]
-    unsat_result = await _run_find_safe_path_helper(
-        graphs=unsat_graphs, start=vertices[0], goal=vertices[7], T=6, V=8, port=5006
+    unsat_baseline, unsat_optimized = await _run_find_safe_path_compare_modes(
+        graphs=unsat_graphs,
+        start=vertices[0],
+        goal=vertices[7],
+        T=6,
+        V=8,
+        port=5007,
     )
-    assert not unsat_result.is_solved
-    assert unsat_result.information_gain == 0.0
+    if unsat_baseline is not None:
+        assert not unsat_baseline.is_solved
+        assert unsat_baseline.information_gain == 0.0
+    if unsat_optimized is not None:
+        assert not unsat_optimized.is_solved
+        assert unsat_optimized.information_gain == 0.0
 
 
 def test_ordered_symbols_is_deterministic():
@@ -583,6 +738,67 @@ def test_build_alice_q_standalone_matches_build_q_block():
     assert (q_alice == blocks["alice"]).all()
 
 
+def test_build_q_edge_domain_flag_reduces_size_and_runtime():
+    vertices = [Vertex(i) for i in range(8)]
+    edges = [
+        Edge(vertices[0], vertices[1], EdgeState.TRAVERSABLE),
+        Edge(vertices[1], vertices[2], EdgeState.TRAVERSABLE),
+        Edge(vertices[2], vertices[3], EdgeState.BLOCKED),
+        Edge(vertices[3], vertices[4], EdgeState.TRAVERSABLE),
+    ]
+    T, V = 4, len(vertices)
+
+    t0 = time.perf_counter()
+    q_full, syms_full, _ = build_q(
+        start=0, goal=4, T=T, V=V, edges=edges, use_edge_domain=False
+    )
+    full_elapsed = time.perf_counter() - t0
+
+    t1 = time.perf_counter()
+    q_compact, syms_compact, _ = build_q(
+        start=0, goal=4, T=T, V=V, edges=edges, use_edge_domain=True
+    )
+    compact_elapsed = time.perf_counter() - t1
+
+    print(
+        f"build_q runtime baseline={full_elapsed:.4f}s compact={compact_elapsed:.4f}s "
+        f"cols {q_full.shape[1]}->{q_compact.shape[1]} rows {q_full.shape[0]}->{q_compact.shape[0]}"
+    )
+    assert q_compact.shape[1] < q_full.shape[1]
+    assert q_compact.shape[0] < q_full.shape[0]
+    assert len(syms_compact) < len(syms_full)
+
+
+def test_build_physics_q_edge_domain_runtime_compare():
+    vertices = [Vertex(i) for i in range(10)]
+    edges = [
+        Edge(vertices[0], vertices[1], EdgeState.TRAVERSABLE),
+        Edge(vertices[1], vertices[2], EdgeState.TRAVERSABLE),
+        Edge(vertices[2], vertices[5], EdgeState.TRAVERSABLE),
+        Edge(vertices[5], vertices[7], EdgeState.BLOCKED),
+    ]
+    T, V = 4, len(vertices)
+    compact_pairs = directed_pairs_from_edges(edges, V)
+
+    t0 = time.perf_counter()
+    q_full = build_physics_q(T=T, V=V)
+    full_elapsed = time.perf_counter() - t0
+
+    syms_compact = ordered_symbols(T=T, V=V, directed_pairs=compact_pairs)
+    t1 = time.perf_counter()
+    q_compact = build_physics_q(
+        T=T, V=V, symbols=syms_compact, directed_pairs=compact_pairs
+    )
+    compact_elapsed = time.perf_counter() - t1
+
+    print(
+        f"build_physics_q runtime baseline={full_elapsed:.4f}s compact={compact_elapsed:.4f}s "
+        f"cols {q_full.shape[1]}->{q_compact.shape[1]} rows {q_full.shape[0]}->{q_compact.shape[0]}"
+    )
+    assert q_compact.shape[1] < q_full.shape[1]
+    assert q_compact.shape[0] < q_full.shape[0]
+
+
 @pytest.mark.asyncio
 async def test_find_safe_path_real_example_sat():
     v0, v1 = Vertex(id=0), Vertex(id=1)
@@ -592,13 +808,38 @@ async def test_find_safe_path_real_example_sat():
         Graph(vertices=vertices, edges=edges),
         Graph(vertices=vertices, edges=edges),
     ]
-    result = await _run_find_safe_path_helper(
-        graphs=graphs, start=Vertex(0), goal=Vertex(1), T=1, V=2, port=5003
+    public_domain_edges = [Edge(Vertex(0), Vertex(1), EdgeState.UNKNOWN)]
+    baseline, optimized = await _run_find_safe_path_compare_modes(
+        graphs=graphs,
+        start=Vertex(0),
+        goal=Vertex(1),
+        T=1,
+        V=2,
+        port=5003,
+        public_domain_edges=public_domain_edges,
     )
-    if result.u_vector is not None:
-        _print_assignments_from_u_vector(result.u_vector, T=1, V=2)
-    assert result.is_solved
-    assert result.information_gain == 0.0
+    baseline_syms = ordered_symbols(T=1, V=2)
+    optimized_syms = ordered_symbols(
+        T=1, V=2, directed_pairs=directed_pairs_from_edges(public_domain_edges, 2)
+    )
+    if baseline is not None and baseline.u_vector is not None:
+        _print_assignments_from_u_vector(
+            baseline.u_vector, T=1, V=2, symbols=baseline_syms
+        )
+    if optimized is not None and optimized.u_vector is not None:
+        _print_assignments_from_u_vector(
+            optimized.u_vector, T=1, V=2, symbols=optimized_syms
+        )
+    print(
+        f"baseline is solved: {None if baseline is None else baseline.is_solved}, "
+        f"optimized is solved: {None if optimized is None else optimized.is_solved}"
+    )
+    if baseline is not None:
+        assert baseline.is_solved
+        assert baseline.information_gain == 0.0
+    if optimized is not None:
+        assert optimized.is_solved
+        assert optimized.information_gain == 0.0
 
 
 @pytest.mark.asyncio
@@ -616,13 +857,34 @@ async def test_find_safe_path_real_example_sat_nine_vertices():
         Graph(vertices=vertices, edges=edges),
         Graph(vertices=vertices, edges=edges),
     ]
-    result = await _run_find_safe_path_helper(
-        graphs=graphs, start=Vertex(0), goal=Vertex(4), T=5, V=5, port=5001
+    baseline, optimized = await _run_find_safe_path_compare_modes(
+        graphs=graphs,
+        start=Vertex(0),
+        goal=Vertex(4),
+        T=5,
+        V=5,
+        port=5010,
+        mode="optimized",
     )
-    if result.u_vector is not None:
-        _print_assignments_from_u_vector(result.u_vector, T=3, V=4)
-    assert result.is_solved
-    assert result.information_gain == 0.0
+    baseline_syms = ordered_symbols(T=5, V=5)
+    default_domain = _unknown_domain_edges_from_graph(graphs[0])
+    optimized_syms = ordered_symbols(
+        T=5, V=5, directed_pairs=directed_pairs_from_edges(default_domain, 5)
+    )
+    if baseline is not None and baseline.u_vector is not None:
+        _print_assignments_from_u_vector(
+            baseline.u_vector, T=5, V=5, symbols=baseline_syms
+        )
+    if optimized is not None and optimized.u_vector is not None:
+        _print_assignments_from_u_vector(
+            optimized.u_vector, T=5, V=5, symbols=optimized_syms
+        )
+    if baseline is not None:
+        assert baseline.is_solved
+        assert baseline.information_gain == 0.0
+    if optimized is not None:
+        assert optimized.is_solved
+        assert optimized.information_gain == 0.0
 
 
 @pytest.mark.asyncio
@@ -635,10 +897,31 @@ async def test_find_safe_path_real_example_unsat():
         Graph(vertices=vertices, edges=edges),
     ]
 
-    result = await _run_find_safe_path_helper(
-        graphs=graphs, start=Vertex(0), goal=Vertex(1), T=1, V=2, port=5004
+    public_domain_edges = [Edge(Vertex(0), Vertex(1), EdgeState.UNKNOWN)]
+    baseline, optimized = await _run_find_safe_path_compare_modes(
+        graphs=graphs,
+        start=Vertex(0),
+        goal=Vertex(1),
+        T=1,
+        V=2,
+        port=5004,
+        public_domain_edges=public_domain_edges,
     )
-    if result.u_vector is not None:
-        _print_assignments_from_u_vector(result.u_vector, T=1, V=2)
-    assert not result.is_solved
-    assert result.information_gain == 0.0
+    baseline_syms = ordered_symbols(T=1, V=2)
+    optimized_syms = ordered_symbols(
+        T=1, V=2, directed_pairs=directed_pairs_from_edges(public_domain_edges, 2)
+    )
+    if baseline is not None and baseline.u_vector is not None:
+        _print_assignments_from_u_vector(
+            baseline.u_vector, T=1, V=2, symbols=baseline_syms
+        )
+    if optimized is not None and optimized.u_vector is not None:
+        _print_assignments_from_u_vector(
+            optimized.u_vector, T=1, V=2, symbols=optimized_syms
+        )
+    if baseline is not None:
+        assert not baseline.is_solved
+        assert baseline.information_gain == 0.0
+    if optimized is not None:
+        assert not optimized.is_solved
+        assert optimized.information_gain == 0.0

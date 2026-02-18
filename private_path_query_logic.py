@@ -25,6 +25,23 @@ def Allowed(u: int, v: int) -> Expr:
     return Expr("Allowed", u, v)
 
 
+def directed_pairs_from_edges(edges: List[Edge], V: int) -> List[Tuple[int, int]]:
+    """
+    Deterministic directed pair domain induced by edges.
+    """
+    pairs = sorted(
+        {
+            (edge.vertex1.id, edge.vertex2.id)
+            for edge in edges
+            if edge.vertex1.id != edge.vertex2.id
+        }
+    )
+    for u, v in pairs:
+        if not (0 <= u < V and 0 <= v < V):
+            raise ValueError("Edge vertex id out of range for V")
+    return pairs
+
+
 def _exactly_one(vars: List[Expr]) -> List[Expr]:
     """Return CNF enforcing exactly one of the given literals is True."""
     clauses: List[Expr] = []
@@ -44,7 +61,9 @@ def _exactly_one(vars: List[Expr]) -> List[Expr]:
     return clauses
 
 
-def physics(T: int, V: int) -> List[Expr]:
+def physics(
+    T: int, V: int, directed_pairs: List[Tuple[int, int]] | None = None
+) -> List[Expr]:
     """
     Propositional dynamics for a single agent moving on a directed graph.
 
@@ -66,7 +85,9 @@ def physics(T: int, V: int) -> List[Expr]:
                 At(t+1,v) <-> (Wait(t,v) OR OR_u Move(t,u,v))
     """
     formulas: List[Expr] = []
-    directed_pairs = [(u, v) for u in range(V) for v in range(V) if u != v]
+    directed_pairs = directed_pairs or [
+        (u, v) for u in range(V) for v in range(V) if u != v
+    ]
 
     # 1) Exactly-one position at each time step
     for t in range(T + 1):
@@ -101,7 +122,7 @@ def physics(T: int, V: int) -> List[Expr]:
     #    At(t+1,v) <-> (Wait(t,v) OR incoming Move(t,*,v))
     for t in range(T):
         for v in range(V):
-            incoming_moves = [Move(t, u, v) for u in range(V) if u != v]
+            incoming_moves = [Move(t, u, w) for (u, w) in directed_pairs if w == v]
             disj = Wait(t, v)
             for m in incoming_moves:
                 disj = disj | m
@@ -110,7 +131,9 @@ def physics(T: int, V: int) -> List[Expr]:
     return formulas
 
 
-def bob_physics(edges: List[Edge], V: int) -> List[Expr]:
+def bob_physics(
+    edges: List[Edge], V: int, directed_pairs: List[Tuple[int, int]] | None = None
+) -> List[Expr]:
     """
     Bob's view of edge traversability, with a closed-world assumption.
 
@@ -142,21 +165,21 @@ def bob_physics(edges: List[Edge], V: int) -> List[Expr]:
             continue
         edge_states[u][v] = int(edge.state)
 
-    for u in range(V):
-        for v in range(V):
-            if u == v:
-                continue
-            state = edge_states[u][v]
-            if state == int(EdgeState.TRAVERSABLE):
-                formulas.append(Active(u, v))
-                formulas.append(Allowed(u, v))
-            elif state == int(EdgeState.BLOCKED):
-                formulas.append(Active(u, v))
-                formulas.append(~Allowed(u, v))
-            else:
-                formulas.append(~Active(u, v))
-                formulas.append(~Allowed(u, v))
-            formulas.append(implies(Allowed(u, v), Active(u, v)))
+    pair_domain = directed_pairs or [
+        (u, v) for u in range(V) for v in range(V) if u != v
+    ]
+    for u, v in pair_domain:
+        state = edge_states[u][v]
+        if state == int(EdgeState.TRAVERSABLE):
+            formulas.append(Active(u, v))
+            formulas.append(Allowed(u, v))
+        elif state == int(EdgeState.BLOCKED):
+            formulas.append(Active(u, v))
+            formulas.append(~Allowed(u, v))
+        else:
+            formulas.append(~Active(u, v))
+            formulas.append(~Allowed(u, v))
+        formulas.append(implies(Allowed(u, v), Active(u, v)))
 
     return formulas
 
@@ -191,7 +214,9 @@ def alice_physics(start: int, goal: int, T: int, V: int) -> List[Expr]:
     return formulas
 
 
-def ordered_symbols(T: int, V: int) -> List[Expr]:
+def ordered_symbols(
+    T: int, V: int, directed_pairs: List[Tuple[int, int]] | None = None
+) -> List[Expr]:
     """
     Deterministic variable ordering for Q columns:
       1) At(t,v)
@@ -201,7 +226,9 @@ def ordered_symbols(T: int, V: int) -> List[Expr]:
       5) Allowed(u,v), u!=v
     """
     symbols: List[Expr] = []
-    directed_pairs = [(u, v) for u in range(V) for v in range(V) if u != v]
+    directed_pairs = directed_pairs or [
+        (u, v) for u in range(V) for v in range(V) if u != v
+    ]
 
     for t in range(T + 1):
         for v in range(V):
@@ -278,16 +305,29 @@ def _clauses_to_q(clauses: List[Expr], symbols: List[Expr]) -> np.ndarray:
     return q
 
 
-def build_physics_q(T: int, V: int, symbols: List[Expr] | None = None) -> np.ndarray:
-    syms = symbols or ordered_symbols(T, V)
-    return _clauses_to_q(_flatten_cnf_clauses(physics(T, V)), syms)
+def build_physics_q(
+    T: int,
+    V: int,
+    symbols: List[Expr] | None = None,
+    directed_pairs: List[Tuple[int, int]] | None = None,
+) -> np.ndarray:
+    syms = symbols or ordered_symbols(T, V, directed_pairs=directed_pairs)
+    return _clauses_to_q(
+        _flatten_cnf_clauses(physics(T, V, directed_pairs=directed_pairs)), syms
+    )
 
 
 def build_bob_q(
-    edges: List[Edge], T: int, V: int, symbols: List[Expr] | None = None
+    edges: List[Edge],
+    T: int,
+    V: int,
+    symbols: List[Expr] | None = None,
+    directed_pairs: List[Tuple[int, int]] | None = None,
 ) -> np.ndarray:
-    syms = symbols or ordered_symbols(T, V)
-    return _clauses_to_q(_flatten_cnf_clauses(bob_physics(edges, V)), syms)
+    syms = symbols or ordered_symbols(T, V, directed_pairs=directed_pairs)
+    return _clauses_to_q(
+        _flatten_cnf_clauses(bob_physics(edges, V, directed_pairs=directed_pairs)), syms
+    )
 
 
 def build_alice_q(
@@ -298,7 +338,12 @@ def build_alice_q(
 
 
 def build_q(
-    start: int, goal: int, T: int, V: int, edges: List[Edge]
+    start: int,
+    goal: int,
+    T: int,
+    V: int,
+    edges: List[Edge],
+    use_edge_domain: bool = False,
 ) -> Tuple[np.ndarray, List[Expr], Dict[str, np.ndarray]]:
     """
     Build full MatSat Q by vertically concatenating:
@@ -306,9 +351,10 @@ def build_q(
       2) bob edge-state clauses
       3) alice start/goal clauses
     """
-    syms = ordered_symbols(T, V)
-    q_physics = build_physics_q(T, V, symbols=syms)
-    q_bob = build_bob_q(edges, T, V, symbols=syms)
+    directed_pairs = directed_pairs_from_edges(edges, V) if use_edge_domain else None
+    syms = ordered_symbols(T, V, directed_pairs=directed_pairs)
+    q_physics = build_physics_q(T, V, symbols=syms, directed_pairs=directed_pairs)
+    q_bob = build_bob_q(edges, T, V, symbols=syms, directed_pairs=directed_pairs)
     q_alice = build_alice_q(start, goal, T, V, symbols=syms)
     q_full = np.concatenate([q_physics, q_bob, q_alice], axis=0)
     return q_full, syms, {"physics": q_physics, "bob": q_bob, "alice": q_alice}
