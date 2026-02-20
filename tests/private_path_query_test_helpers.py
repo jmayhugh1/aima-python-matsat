@@ -101,8 +101,10 @@ def _resolve_mode(mode: str | None = None) -> str | None:
     if selected is None or str(selected).strip() == "":
         return None
     selected = str(selected).strip().lower()
-    if selected not in {"baseline", "optimized"}:
-        raise ValueError("mode must be one of: baseline, optimized, or empty")
+    if selected == "full":
+        selected = "baseline"
+    if selected not in {"baseline", "optimized", "both"}:
+        raise ValueError("mode must be one of: baseline/full, optimized, both, or empty")
     return selected
 
 
@@ -198,7 +200,14 @@ async def _run_find_safe_path_compare_modes(
     baseline: ComputationResult | None = None
     optimized: ComputationResult | None = None
 
-    if selected_mode in (None, "baseline"):
+    auto_mode = (
+        "optimized"
+        if (public_domain_edges is not None and len(public_domain_edges) > 0)
+        else "baseline"
+    )
+    effective_mode = selected_mode or auto_mode
+
+    if effective_mode in ("baseline", "both"):
         baseline = await _run_find_safe_path_helper(
             graphs=graphs,
             start=start,
@@ -209,7 +218,7 @@ async def _run_find_safe_path_compare_modes(
             use_edge_domain=False,
             weighted=weighted,
         )
-    if selected_mode in (None, "optimized"):
+    if effective_mode in ("optimized", "both"):
         domain = public_domain_edges or _unknown_domain_edges_from_graph(graphs[0])
         optimized = await _run_find_safe_path_helper(
             graphs=graphs,
@@ -225,7 +234,7 @@ async def _run_find_safe_path_compare_modes(
 
     print(
         "MODE_COMPARE "
-        f"mode={selected_mode or 'both'} "
+        f"mode={effective_mode} "
         f"baseline(solved={None if baseline is None else baseline.is_solved}, sat={None if baseline is None else baseline.satisfied_clauses}) "
         f"optimized(solved={None if optimized is None else optimized.is_solved}, sat={None if optimized is None else optimized.satisfied_clauses})"
     )

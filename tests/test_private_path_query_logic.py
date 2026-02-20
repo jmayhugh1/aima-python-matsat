@@ -32,6 +32,7 @@ from tests.private_path_query_test_helpers import (
     _force_graph_path_moves,
     _print_sat_moves,
     _print_assignments_from_u_vector,
+    _assert_optimized_result,
     _unknown_domain_edges_from_graph,
     _run_find_safe_path_compare_modes,
     _verify_result_and_print,
@@ -99,9 +100,9 @@ def test_private_path_info_edge_domain_requires_unknown_edges():
 async def test_compile_find_safe_path_with_private_path_info_real_compile():
     T, V = 1, 2
     syms = ordered_symbols(T, V)
-    q_alice = build_alice_q(start=0, goal=0, T=T, V=V, symbols=syms)
-    q_bob = build_bob_q(edges=[], T=T, V=V, symbols=syms)
-    q_physics = build_physics_q(T=T, V=V, symbols=syms)
+    q_alice, _ = build_alice_q(start=0, goal=0, T=T, V=V, symbols=syms)
+    q_bob, _ = build_bob_q(edges=[], T=T, V=V, symbols=syms)
+    q_physics, _ = build_physics_q(T=T, V=V, symbols=syms)
     alice_rows = int(q_physics.shape[0] + q_alice.shape[0])
     bob_rows = int(q_bob.shape[0])
     info = PrivatePathInfo(
@@ -123,9 +124,11 @@ async def test_compile_find_safe_path_with_public_edge_domain_real_compile():
     ]
     compact_pairs = directed_pairs_from_edges(public_domain_edges, V)
     syms = ordered_symbols(T, V, directed_pairs=compact_pairs)
-    q_alice = build_alice_q(start=0, goal=2, T=T, V=V, symbols=syms)
-    q_bob = build_bob_q(edges=[], T=T, V=V, symbols=syms, directed_pairs=compact_pairs)
-    q_physics = build_physics_q(T=T, V=V, symbols=syms, directed_pairs=compact_pairs)
+    q_alice, _ = build_alice_q(start=0, goal=2, T=T, V=V, symbols=syms)
+    q_bob, _ = build_bob_q(
+        edges=[], T=T, V=V, symbols=syms, directed_pairs=compact_pairs
+    )
+    q_physics, _ = build_physics_q(T=T, V=V, symbols=syms, directed_pairs=compact_pairs)
     alice_rows = int(q_physics.shape[0] + q_alice.shape[0])
     bob_rows = int(q_bob.shape[0])
     info = PrivatePathInfo(
@@ -321,6 +324,7 @@ async def test_find_safe_path_fat_graph_mixed_states_sat_and_unsat():
         Graph(vertices=vertices, edges=base_edges),
         Graph(vertices=vertices, edges=base_edges),
     ]
+    sat_domain = _unknown_domain_edges_from_graph(sat_graphs[0])
     sat_baseline, sat_optimized = await _run_find_safe_path_compare_modes(
         graphs=sat_graphs,
         start=vertices[0],
@@ -328,6 +332,7 @@ async def test_find_safe_path_fat_graph_mixed_states_sat_and_unsat():
         T=6,
         V=8,
         port=5005,
+        public_domain_edges=sat_domain,
     )
     if sat_baseline is not None:
         assert sat_baseline.is_solved
@@ -349,6 +354,7 @@ async def test_find_safe_path_fat_graph_mixed_states_sat_and_unsat():
         Graph(vertices=vertices, edges=unsat_edges),
         Graph(vertices=vertices, edges=unsat_edges),
     ]
+    unsat_domain = _unknown_domain_edges_from_graph(unsat_graphs[0])
     unsat_baseline, unsat_optimized = await _run_find_safe_path_compare_modes(
         graphs=unsat_graphs,
         start=vertices[0],
@@ -356,6 +362,7 @@ async def test_find_safe_path_fat_graph_mixed_states_sat_and_unsat():
         T=6,
         V=8,
         port=5007,
+        public_domain_edges=unsat_domain,
     )
     if unsat_baseline is not None:
         assert not unsat_baseline.is_solved
@@ -507,7 +514,7 @@ def test_build_physics_q_standalone_matches_build_q_block():
     edges = [Edge(vertices[0], vertices[1], EdgeState.TRAVERSABLE)]
     syms = ordered_symbols(T, V)
 
-    q_physics = build_physics_q(T=T, V=V, symbols=syms)
+    q_physics, _ = build_physics_q(T=T, V=V, symbols=syms)
     q_full, syms_full, blocks = build_q(start=0, goal=1, T=T, V=V, edges=edges)
 
     assert syms == syms_full
@@ -526,7 +533,7 @@ def test_build_bob_q_standalone_matches_build_q_block():
     ]
     syms = ordered_symbols(T, V)
 
-    q_bob = build_bob_q(edges=edges, T=T, V=V, symbols=syms)
+    q_bob, _ = build_bob_q(edges=edges, T=T, V=V, symbols=syms)
     _, syms_full, blocks = build_q(start=0, goal=2, T=T, V=V, edges=edges)
 
     assert syms == syms_full
@@ -542,7 +549,7 @@ def test_build_alice_q_standalone_matches_build_q_block():
     edges = [Edge(vertices[0], vertices[1], EdgeState.TRAVERSABLE)]
     syms = ordered_symbols(T, V)
 
-    q_alice = build_alice_q(start=start, goal=goal, T=T, V=V, symbols=syms)
+    q_alice, _ = build_alice_q(start=start, goal=goal, T=T, V=V, symbols=syms)
     _, syms_full, blocks = build_q(start=start, goal=goal, T=T, V=V, edges=edges)
 
     assert syms == syms_full
@@ -594,12 +601,12 @@ def test_build_physics_q_edge_domain_runtime_compare():
     compact_pairs = directed_pairs_from_edges(edges, V)
 
     t0 = time.perf_counter()
-    q_full = build_physics_q(T=T, V=V)
+    q_full, _ = build_physics_q(T=T, V=V)
     full_elapsed = time.perf_counter() - t0
 
     syms_compact = ordered_symbols(T=T, V=V, directed_pairs=compact_pairs)
     t1 = time.perf_counter()
-    q_compact = build_physics_q(
+    q_compact, _ = build_physics_q(
         T=T, V=V, symbols=syms_compact, directed_pairs=compact_pairs
     )
     compact_elapsed = time.perf_counter() - t1
@@ -660,6 +667,7 @@ async def test_find_safe_path_real_example_sat_nine_vertices():
         Graph(vertices=vertices, edges=edges),
         Graph(vertices=vertices, edges=edges),
     ]
+    default_domain = _unknown_domain_edges_from_graph(graphs[0])
     baseline, optimized = await _run_find_safe_path_compare_modes(
         graphs=graphs,
         start=Vertex(0),
@@ -667,10 +675,9 @@ async def test_find_safe_path_real_example_sat_nine_vertices():
         T=5,
         V=5,
         port=5010,
-        mode="optimized",
+        public_domain_edges=default_domain,
     )
     baseline_syms = ordered_symbols(T=5, V=5)
-    default_domain = _unknown_domain_edges_from_graph(graphs[0])
     optimized_syms = ordered_symbols(
         T=5, V=5, directed_pairs=directed_pairs_from_edges(default_domain, 5)
     )
@@ -709,4 +716,249 @@ async def test_find_safe_path_real_example_unsat():
     )
     _verify_result_and_print(
         optimized, expect_sat=False, T=1, V=2, symbols=optimized_syms
+    )
+
+
+def _assert_exact_u_vector_order_single_edge_case(
+    *,
+    optimized,
+    domain: list[Edge],
+    expect_allowed: bool,
+):
+    assert optimized is not None
+    assert optimized.u_vector is not None
+    compact_pairs = directed_pairs_from_edges(domain, 2)
+    assert compact_pairs == [(0, 1)]
+    # Compact symbol order for T=1, V=2 and one directed pair.
+    expected_symbol_order = [
+        "At(0, 0)",
+        "At(0, 1)",
+        "At(1, 0)",
+        "At(1, 1)",
+        "Move(0, 0, 1)",
+        "Wait(0, 0)",
+        "Wait(0, 1)",
+        "Active(0, 1)",
+        "Allowed(0, 1)",
+    ]
+    got_symbol_order = [
+        str(s) for s in ordered_symbols(T=1, V=2, directed_pairs=compact_pairs)
+    ]
+    assert got_symbol_order == expected_symbol_order
+
+    expected_u = [1, 0, 0, 1, 1, 0, 0, 1, 1 if expect_allowed else 0]
+    assert (
+        optimized.u_vector == expected_u
+    ), f"Expected exact u-vector ordering {expected_u}, got {optimized.u_vector}"
+
+
+@pytest.mark.asyncio
+async def test_optimized_matsat_sat_single_traversable_edge():
+    v0, v1 = Vertex(0), Vertex(1)
+    edges = [Edge(v0, v1, EdgeState.TRAVERSABLE)]
+    graphs = [Graph([v0, v1], edges=edges), Graph([v0, v1], edges=edges)]
+    domain = [Edge(v0, v1, EdgeState.UNKNOWN)]
+    baseline, optimized = await _run_find_safe_path_compare_modes(
+        graphs=graphs,
+        start=v0,
+        goal=v1,
+        T=1,
+        V=2,
+        port=5100,
+        public_domain_edges=domain,
+    )
+    assert baseline is None
+    _assert_optimized_result(
+        optimized,
+        expect_sat=True,
+        T=1,
+        V=2,
+        start=v0.id,
+        goal=v1.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+    )
+    _assert_exact_u_vector_order_single_edge_case(
+        optimized=optimized, domain=domain, expect_allowed=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_optimized_matsat_unsat_single_blocked_edge():
+    v0, v1 = Vertex(0), Vertex(1)
+    edges = [Edge(v0, v1, EdgeState.BLOCKED)]
+    graphs = [Graph([v0, v1], edges=edges), Graph([v0, v1], edges=edges)]
+    domain = [Edge(v0, v1, EdgeState.UNKNOWN)]
+    baseline, optimized = await _run_find_safe_path_compare_modes(
+        graphs=graphs,
+        start=v0,
+        goal=v1,
+        T=1,
+        V=2,
+        port=5102,
+        public_domain_edges=domain,
+    )
+    assert baseline is None
+    _assert_optimized_result(
+        optimized,
+        expect_sat=False,
+        T=1,
+        V=2,
+        start=v0.id,
+        goal=v1.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+        print_bob_cnf=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_optimized_matsat_sat_chain_two_steps():
+    v0, v1, v2 = Vertex(0), Vertex(1), Vertex(2)
+    edges = [Edge(v0, v1, EdgeState.TRAVERSABLE), Edge(v1, v2, EdgeState.TRAVERSABLE)]
+    graphs = [Graph([v0, v1, v2], edges=edges), Graph([v0, v1, v2], edges=edges)]
+    domain = _unknown_domain_edges_from_graph(graphs[0])
+    baseline, optimized = await _run_find_safe_path_compare_modes(
+        graphs=graphs,
+        start=v0,
+        goal=v2,
+        T=2,
+        V=3,
+        port=5106,
+        public_domain_edges=domain,
+    )
+    assert baseline is None
+    _assert_optimized_result(
+        optimized,
+        expect_sat=True,
+        T=2,
+        V=3,
+        start=v0.id,
+        goal=v2.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+    )
+
+
+@pytest.mark.asyncio
+async def test_optimized_matsat_unsat_insufficient_horizon():
+    v0, v1, v2 = Vertex(0), Vertex(1), Vertex(2)
+    edges = [Edge(v0, v1, EdgeState.TRAVERSABLE), Edge(v1, v2, EdgeState.TRAVERSABLE)]
+    graphs = [Graph([v0, v1, v2], edges=edges), Graph([v0, v1, v2], edges=edges)]
+    domain = _unknown_domain_edges_from_graph(graphs[0])
+    baseline, optimized = await _run_find_safe_path_compare_modes(
+        graphs=graphs,
+        start=v0,
+        goal=v2,
+        T=1,
+        V=3,
+        port=5108,
+        public_domain_edges=domain,
+    )
+    assert baseline is None
+    _assert_optimized_result(
+        optimized,
+        expect_sat=False,
+        T=1,
+        V=3,
+        start=v0.id,
+        goal=v2.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+    )
+
+
+@pytest.mark.asyncio
+async def test_optimized_matsat_sat_detour_around_blocked_edge():
+    v0, v1, v2, v3 = Vertex(0), Vertex(1), Vertex(2), Vertex(3)
+    edges = [
+        Edge(v0, v1, EdgeState.BLOCKED),
+        Edge(v0, v2, EdgeState.TRAVERSABLE),
+        Edge(v2, v3, EdgeState.TRAVERSABLE),
+        Edge(v1, v3, EdgeState.TRAVERSABLE),
+    ]
+    graphs = [
+        Graph([v0, v1, v2, v3], edges=edges),
+        Graph([v0, v1, v2, v3], edges=edges),
+    ]
+    domain = _unknown_domain_edges_from_graph(graphs[0])
+    baseline, optimized = await _run_find_safe_path_compare_modes(
+        graphs=graphs,
+        start=v0,
+        goal=v3,
+        T=2,
+        V=4,
+        port=5110,
+        public_domain_edges=domain,
+    )
+    assert baseline is None
+    _assert_optimized_result(
+        optimized,
+        expect_sat=True,
+        T=2,
+        V=4,
+        start=v0.id,
+        goal=v3.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+        print_bob_cnf=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_optimized_matsat_unsat_disconnected_goal():
+    v0, v1, v2, v3 = Vertex(0), Vertex(1), Vertex(2), Vertex(3)
+    edges = [Edge(v0, v1, EdgeState.TRAVERSABLE)]
+    graphs = [
+        Graph([v0, v1, v2, v3], edges=edges),
+        Graph([v0, v1, v2, v3], edges=edges),
+    ]
+    domain = [Edge(v0, v1, EdgeState.UNKNOWN), Edge(v1, v0, EdgeState.UNKNOWN)]
+    baseline, optimized = await _run_find_safe_path_compare_modes(
+        graphs=graphs,
+        start=v0,
+        goal=v3,
+        T=3,
+        V=4,
+        port=5112,
+        public_domain_edges=domain,
+    )
+    assert baseline is None
+    _assert_optimized_result(
+        optimized,
+        expect_sat=False,
+        T=3,
+        V=4,
+        start=v0.id,
+        goal=v3.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+    )
+
+
+@pytest.mark.asyncio
+async def test_optimized_matsat_sat_reach_then_wait():
+    v0, v1 = Vertex(0), Vertex(1)
+    edges = [Edge(v0, v1, EdgeState.TRAVERSABLE)]
+    graphs = [Graph([v0, v1], edges=edges), Graph([v0, v1], edges=edges)]
+    domain = [Edge(v0, v1, EdgeState.UNKNOWN), Edge(v1, v0, EdgeState.UNKNOWN)]
+    baseline, optimized = await _run_find_safe_path_compare_modes(
+        graphs=graphs,
+        start=v0,
+        goal=v1,
+        T=2,
+        V=2,
+        port=5114,
+        public_domain_edges=domain,
+    )
+    assert baseline is None
+    _assert_optimized_result(
+        optimized,
+        expect_sat=True,
+        T=2,
+        V=2,
+        start=v0.id,
+        goal=v1.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
     )
