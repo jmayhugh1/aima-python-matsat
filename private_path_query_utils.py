@@ -593,6 +593,7 @@ async def compile_find_safe_path(
     rows_per_party: int = 1,
     row_counts: List[int] | None = None,
     use_weight_vector: bool = False,
+    weighted: bool | None = None,
     private_path_info: PrivatePathInfo | None = None,
 ) -> bool:
     """
@@ -607,6 +608,8 @@ async def compile_find_safe_path(
         V = private_path_info.V
         row_counts = private_path_info.rows_per_id
         use_weight_vector = private_path_info.use_weight_vector
+    if weighted is not None:
+        use_weight_vector = weighted
     if T is None or V is None:
         raise ValueError("T and V are required for compile_find_safe_path")
     if num_parties is None or num_parties < 1:
@@ -625,6 +628,8 @@ async def compile_find_safe_path(
     path = [
         "python3",
         find_safe_path_program_path,
+        "-F",
+        "128",
         "--num_parties",
         str(num_parties),
         "--num_vars",
@@ -856,11 +861,17 @@ async def join_computation(
         pass
 
 
-def _q_matrix_to_payload(q: np.ndarray) -> str:
-    """Serialize integer Q matrix rows to MP-SPDZ stdin payload."""
+def _q_matrix_to_payload(q: np.ndarray, weights: np.ndarray | None = None) -> str:
+    """
+    Serialize Q matrix rows to MP-SPDZ stdin payload.
+
+    If `weights` is provided, append one scalar weight per row after all Q rows.
+    """
     lines: List[str] = []
     for row in q:
         lines.append(" ".join(str(int(v)) for v in row))
+    if weights is not None:
+        lines.extend(str(float(v)) for v in weights)
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -874,6 +885,7 @@ async def join_computation_find_safe_path(
     host: str | None = None,
     protocol: Protocol = Protocol.SHAMIR,
     compile_program: bool = True,
+    weighted: bool | None = None,
 ) -> ComputationResult:
     """
     Dedicated join path for FIND_SAFE_PATH (matsat).
@@ -881,6 +893,8 @@ async def join_computation_find_safe_path(
     Party roles:
       - Alice (id=0): sends [q_physics ; q_alice] built from (start, goal, T, V)
       - Bob (id>0): sends q_bob built from (graph, T, V)
+      - When weighted=True (or private_path_info.use_weight_vector=True), each
+        party also appends one clause-weight per local Q row.
     """
     if private_path_info.T is None or private_path_info.V is None:
         raise ValueError("private_path_info must include T and V")
@@ -903,30 +917,43 @@ async def join_computation_find_safe_path(
 
     directed_pairs = private_path_info.edge_domain_pairs()
     syms = ordered_symbols(T, V, directed_pairs=directed_pairs)
-    q_physics = build_physics_q(T, V, symbols=syms, directed_pairs=directed_pairs)
+    q_physics, w_physics = build_physics_q(
+        T, V, symbols=syms, directed_pairs=directed_pairs
+    )
+    effective_weighted = (
+        private_path_info.use_weight_vector if weighted is None else weighted
+    )
 
     if id == 0:
         if start is None or goal is None:
             raise ValueError("Alice party (id=0) requires start and goal")
-        q_alice = build_alice_q(start.id, goal.id, T, V, symbols=syms)
+        q_alice, w_alice = build_alice_q(start.id, goal.id, T, V, symbols=syms)
         q_party = np.concatenate([q_physics, q_alice], axis=0)
+        w_party = np.concatenate([w_physics, w_alice], axis=0)
     else:
         if graph is None:
             raise ValueError("Bob parties (id>0) require graph input")
         bob_edges = graph.to_directed_edges()
-        q_bob = build_bob_q(
+        q_bob, w_bob = build_bob_q(
             bob_edges, T, V, symbols=syms, directed_pairs=directed_pairs
         )
         q_party = q_bob
+        w_party = w_bob
+
+    if len(w_party) != q_party.shape[0]:
+        raise ValueError("Per-party clause weights must match local row count")
 
     if compile_program and id == 0:
         ok = await compile_find_safe_path(
             private_path_info=private_path_info,
+            weighted=effective_weighted,
         )
         if not ok:
             raise RuntimeError("FIND_SAFE_PATH compile failed")
 
-    payload = _q_matrix_to_payload(q_party)
+    payload = _q_matrix_to_payload(
+        q_party, weights=w_party if effective_weighted else None
+    )
     return await join_computation(
         id=id,
         num_parties=num_parties,

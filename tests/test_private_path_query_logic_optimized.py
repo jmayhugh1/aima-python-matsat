@@ -1,44 +1,50 @@
 import pytest
 
-from private_path_query_logic import (
-    ordered_symbols,
-    directed_pairs_from_edges,
-)
+from private_path_query_logic import directed_pairs_from_edges, ordered_symbols
 from private_path_query_utils import (
     Graph,
     Vertex,
     Edge,
     EdgeState,
 )
-from tests.test_private_path_query_logic import (
+from tests.private_path_query_test_helpers import (
+    _assert_optimized_result,
+    _unknown_domain_edges_from_graph,
     _run_find_safe_path_compare_modes,
-    _print_assignments_from_u_vector,
 )
 
 
-def _unknown_domain_edges_from_graph(graph: Graph) -> list[Edge]:
-    return [
-        Edge(e.vertex1, e.vertex2, EdgeState.UNKNOWN) for e in graph.to_directed_edges()
-    ]
-
-
-def _assert_optimized_result(
-    optimized, expect_sat: bool, T: int, V: int, domain_edges: list[Edge]
+def _assert_exact_u_vector_order_single_edge_case(
+    *,
+    optimized,
+    domain: list[Edge],
+    expect_allowed: bool,
 ):
     assert optimized is not None
-    optimized_syms = ordered_symbols(
-        T, V, directed_pairs=directed_pairs_from_edges(domain_edges, V)
-    )
-    if optimized.u_vector is not None:
-        _print_assignments_from_u_vector(
-            optimized.u_vector, T=T, V=V, symbols=optimized_syms
-        )
-        assert all(v in (0, 1) for v in optimized.u_vector)
-    if expect_sat:
-        assert optimized.is_solved
-    else:
-        assert not optimized.is_solved
-    assert optimized.information_gain == 0.0
+    assert optimized.u_vector is not None
+    compact_pairs = directed_pairs_from_edges(domain, 2)
+    assert compact_pairs == [(0, 1)]
+    # Compact symbol order for T=1, V=2 and one directed pair.
+    expected_symbol_order = [
+        "At(0, 0)",
+        "At(0, 1)",
+        "At(1, 0)",
+        "At(1, 1)",
+        "Move(0, 0, 1)",
+        "Wait(0, 0)",
+        "Wait(0, 1)",
+        "Active(0, 1)",
+        "Allowed(0, 1)",
+    ]
+    got_symbol_order = [
+        str(s) for s in ordered_symbols(T=1, V=2, directed_pairs=compact_pairs)
+    ]
+    assert got_symbol_order == expected_symbol_order
+
+    expected_u = [1, 0, 0, 1, 1, 0, 0, 1, 1 if expect_allowed else 0]
+    assert (
+        optimized.u_vector == expected_u
+    ), f"Expected exact u-vector ordering {expected_u}, got {optimized.u_vector}"
 
 
 @pytest.mark.asyncio
@@ -58,7 +64,19 @@ async def test_optimized_matsat_sat_single_traversable_edge():
         mode="optimized",
     )
     assert baseline is None
-    _assert_optimized_result(optimized, expect_sat=True, T=1, V=2, domain_edges=domain)
+    _assert_optimized_result(
+        optimized,
+        expect_sat=True,
+        T=1,
+        V=2,
+        start=v0.id,
+        goal=v1.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+    )
+    _assert_exact_u_vector_order_single_edge_case(
+        optimized=optimized, domain=domain, expect_allowed=True
+    )
 
 
 @pytest.mark.asyncio
@@ -78,7 +96,17 @@ async def test_optimized_matsat_unsat_single_blocked_edge():
         mode="optimized",
     )
     assert baseline is None
-    _assert_optimized_result(optimized, expect_sat=False, T=1, V=2, domain_edges=domain)
+    _assert_optimized_result(
+        optimized,
+        expect_sat=False,
+        T=1,
+        V=2,
+        start=v0.id,
+        goal=v1.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+        print_bob_cnf=True,
+    )
 
 
 # @pytest.mark.asyncio
@@ -117,7 +145,16 @@ async def test_optimized_matsat_sat_chain_two_steps():
         mode="optimized",
     )
     assert baseline is None
-    _assert_optimized_result(optimized, expect_sat=True, T=2, V=3, domain_edges=domain)
+    _assert_optimized_result(
+        optimized,
+        expect_sat=True,
+        T=2,
+        V=3,
+        start=v0.id,
+        goal=v2.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+    )
 
 
 @pytest.mark.asyncio
@@ -137,7 +174,16 @@ async def test_optimized_matsat_unsat_insufficient_horizon():
         mode="optimized",
     )
     assert baseline is None
-    _assert_optimized_result(optimized, expect_sat=False, T=1, V=3, domain_edges=domain)
+    _assert_optimized_result(
+        optimized,
+        expect_sat=False,
+        T=1,
+        V=3,
+        start=v0.id,
+        goal=v2.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+    )
 
 
 @pytest.mark.asyncio
@@ -165,7 +211,17 @@ async def test_optimized_matsat_sat_detour_around_blocked_edge():
         mode="optimized",
     )
     assert baseline is None
-    _assert_optimized_result(optimized, expect_sat=True, T=2, V=4, domain_edges=domain)
+    _assert_optimized_result(
+        optimized,
+        expect_sat=True,
+        T=2,
+        V=4,
+        start=v0.id,
+        goal=v3.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+        print_bob_cnf=True,
+    )
 
 
 @pytest.mark.asyncio
@@ -188,7 +244,16 @@ async def test_optimized_matsat_unsat_disconnected_goal():
         mode="optimized",
     )
     assert baseline is None
-    _assert_optimized_result(optimized, expect_sat=False, T=3, V=4, domain_edges=domain)
+    _assert_optimized_result(
+        optimized,
+        expect_sat=False,
+        T=3,
+        V=4,
+        start=v0.id,
+        goal=v3.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+    )
 
 
 @pytest.mark.asyncio
@@ -208,4 +273,13 @@ async def test_optimized_matsat_sat_reach_then_wait():
         mode="optimized",
     )
     assert baseline is None
-    _assert_optimized_result(optimized, expect_sat=True, T=2, V=2, domain_edges=domain)
+    _assert_optimized_result(
+        optimized,
+        expect_sat=True,
+        T=2,
+        V=2,
+        start=v0.id,
+        goal=v1.id,
+        domain_edges=domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+    )
