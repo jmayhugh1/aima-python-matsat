@@ -648,7 +648,15 @@ async def test_find_safe_path_real_example_sat():
     )
     _verify_result_and_print(baseline, expect_sat=True, T=1, V=2, symbols=baseline_syms)
     _verify_result_and_print(
-        optimized, expect_sat=True, T=1, V=2, symbols=optimized_syms
+        optimized,
+        expect_sat=True,
+        T=1,
+        V=2,
+        symbols=optimized_syms,
+        start=0,
+        goal=1,
+        domain_edges=public_domain_edges,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
     )
 
 
@@ -683,7 +691,15 @@ async def test_find_safe_path_real_example_sat_nine_vertices():
     )
     _verify_result_and_print(baseline, expect_sat=True, T=5, V=5, symbols=baseline_syms)
     _verify_result_and_print(
-        optimized, expect_sat=True, T=5, V=5, symbols=optimized_syms
+        optimized,
+        expect_sat=True,
+        T=5,
+        V=5,
+        symbols=optimized_syms,
+        start=0,
+        goal=4,
+        domain_edges=default_domain,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
     )
 
 
@@ -715,7 +731,15 @@ async def test_find_safe_path_real_example_unsat():
         baseline, expect_sat=False, T=1, V=2, symbols=baseline_syms
     )
     _verify_result_and_print(
-        optimized, expect_sat=False, T=1, V=2, symbols=optimized_syms
+        optimized,
+        expect_sat=False,
+        T=1,
+        V=2,
+        symbols=optimized_syms,
+        start=0,
+        goal=1,
+        domain_edges=public_domain_edges,
+        bob_edges_by_party=[g.to_directed_edges() for g in graphs],
     )
 
 

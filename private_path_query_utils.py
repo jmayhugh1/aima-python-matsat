@@ -3,6 +3,7 @@ import os
 from typing import Tuple, List, Literal, Protocol, Optional
 from abc import ABC, abstractmethod
 import pathlib
+import csv
 import subprocess
 import asyncio
 from enum import Enum, IntEnum
@@ -10,6 +11,7 @@ import sys
 import shutil
 import re
 import json
+from datetime import datetime
 import numpy as np
 
 # Resolve paths relative to THIS file, not the CWD
@@ -36,6 +38,9 @@ find_safe_path_program_path = str(
 )
 run_parties_path = str(_SPDZ_ROOT / "run-parties.py")
 encodings_path = str((_THIS_DIR / "path-encodings").resolve())
+_TRACE_ARTIFACTS_ROOT = (_THIS_DIR / "trace-artifacts").resolve()
+_TRACE_CSV_DIR = (_TRACE_ARTIFACTS_ROOT / "csv").resolve()
+_TRACE_GRAPHS_DIR = (_TRACE_ARTIFACTS_ROOT / "graphs").resolve()
 
 # ===============================================================================
 # TYPES AND ENUMS
@@ -729,6 +734,165 @@ async def compile_verifier(
         return False
 
 
+def _parse_matsat_trace_rows(output: str) -> List[dict]:
+    """Parse solver iteration traces from stdout into structured rows."""
+    try_re = re.compile(r"try_idx\s*=\s*(\d+)")
+    iter_re = re.compile(r"iter_idx\s*=\s*(\d+)")
+    jsat_re = re.compile(r"jsat\s*=\s*([-+]?\d+(?:\.\d+)?)")
+    grad_re = re.compile(r"grad_sq\s*=\s*([-+]?\d+(?:\.\d+)?)")
+    eps_re = re.compile(r"epsilon\s*=\s*([-+]?\d+(?:\.\d+)?)")
+    alpha_re = re.compile(r"uncapped alpha\s*=\s*([-+]?\d+(?:\.\d+)?)")
+    err_re = re.compile(r"err\s*=\s*([-+]?\d+(?:\.\d+)?)")
+    unsat_re = re.compile(r"unsat_clauses\s*=\s*(\d+)")
+
+    rows: List[dict] = []
+    current_try = -1
+    saw_explicit_try = False
+    last_iter: Optional[int] = None
+    current_row: Optional[dict] = None
+
+    for raw in output.splitlines():
+        line = raw.strip()
+        m_try = try_re.search(line)
+        if m_try:
+            current_try = int(m_try.group(1))
+            saw_explicit_try = True
+            last_iter = None
+            continue
+        m_iter = iter_re.search(line)
+        if m_iter:
+            iter_idx = int(m_iter.group(1))
+            if not saw_explicit_try:
+                if last_iter is None or iter_idx <= last_iter:
+                    current_try += 1
+            elif last_iter is not None and iter_idx <= last_iter:
+                current_try += 1
+            last_iter = iter_idx
+            current_row = {"try_idx": current_try, "iter_idx": iter_idx}
+            rows.append(current_row)
+            continue
+
+        if current_row is None:
+            continue
+
+        m_jsat = jsat_re.search(line)
+        if m_jsat:
+            current_row.setdefault("jsat", float(m_jsat.group(1)))
+            continue
+
+        m_grad = grad_re.search(line)
+        if m_grad:
+            current_row["grad_sq"] = float(m_grad.group(1))
+            continue
+
+        m_eps = eps_re.search(line)
+        if m_eps:
+            current_row["epsilon"] = float(m_eps.group(1))
+            continue
+
+        m_alpha = alpha_re.search(line)
+        if m_alpha:
+            current_row["alpha"] = float(m_alpha.group(1))
+            continue
+
+        m_err = err_re.search(line)
+        if m_err:
+            current_row["err"] = float(m_err.group(1))
+            continue
+
+        m_unsat = unsat_re.search(line)
+        if m_unsat:
+            current_row["unsat_clauses"] = int(m_unsat.group(1))
+            continue
+
+    return rows
+
+
+def _write_matsat_trace_artifacts(
+    output: str, run_name: str, test_name: str | None = None
+) -> None:
+    """
+    Write one CSV per run and one graph per try for MatSat trace output.
+
+    If test_name is provided, artifacts are organized under that name;
+    otherwise a timestamp-based folder is used.
+    """
+    rows = _parse_matsat_trace_rows(output)
+    if not rows:
+        return
+
+    _TRACE_CSV_DIR.mkdir(parents=True, exist_ok=True)
+    folder_name = (
+        test_name if test_name else datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    )
+    csv_path = (_TRACE_CSV_DIR / f"{run_name}_{folder_name}.csv").resolve()
+    fieldnames = [
+        "try_idx",
+        "iter_idx",
+        "jsat",
+        "grad_sq",
+        "epsilon",
+        "alpha",
+        "err",
+        "unsat_clauses",
+    ]
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
+    print(f"trace csv: {csv_path}")
+
+    try:
+        import matplotlib.pyplot as plt  # type: ignore
+    except Exception:
+        return
+
+    by_try: dict[int, List[dict]] = {}
+    for row in rows:
+        by_try.setdefault(int(row["try_idx"]), []).append(row)
+
+    graph_dir = (_TRACE_GRAPHS_DIR / run_name / folder_name).resolve()
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    for try_idx, try_rows in by_try.items():
+        sorted_rows = sorted(try_rows, key=lambda r: int(r["iter_idx"]))
+        x = [int(r["iter_idx"]) for r in sorted_rows]
+        y_jsat = [float(r["jsat"]) if "jsat" in r else np.nan for r in sorted_rows]
+        y_grad = [
+            float(r["grad_sq"]) if "grad_sq" in r else np.nan for r in sorted_rows
+        ]
+        y_alpha = [float(r["alpha"]) if "alpha" in r else np.nan for r in sorted_rows]
+        y_err = [float(r["err"]) if "err" in r else np.nan for r in sorted_rows]
+        y_unsat = [
+            float(r["unsat_clauses"]) if "unsat_clauses" in r else np.nan
+            for r in sorted_rows
+        ]
+
+        fig, axes = plt.subplots(5, 1, figsize=(9, 13), sharex=True)
+        axes[0].plot(x, y_jsat, marker="o", markersize=2, linewidth=1)
+        axes[0].set_ylabel("jsat")
+        axes[0].grid(True, alpha=0.3)
+        axes[1].plot(x, y_grad, marker="o", markersize=2, linewidth=1)
+        axes[1].set_ylabel("grad_sq")
+        axes[1].grid(True, alpha=0.3)
+        axes[2].plot(x, y_alpha, marker="o", markersize=2, linewidth=1)
+        axes[2].set_ylabel("uncapped alpha")
+        axes[2].grid(True, alpha=0.3)
+        axes[3].plot(x, y_err, marker="o", markersize=2, linewidth=1)
+        axes[3].set_ylabel("err")
+        axes[3].grid(True, alpha=0.3)
+        axes[4].plot(x, y_unsat, marker="o", markersize=2, linewidth=1)
+        axes[4].set_xlabel("iteration")
+        axes[4].set_ylabel("unsat_clauses")
+        axes[4].grid(True, alpha=0.3)
+        fig.suptitle(f"{run_name} try={try_idx}")
+        fig.tight_layout()
+        out_path = (graph_dir / f"try_{try_idx}.png").resolve()
+        fig.savefig(out_path, dpi=140)
+        plt.close(fig)
+        print(f"trace graph: {out_path}")
+
+
 async def join_computation(
     id: int,
     num_parties: int,
@@ -737,6 +901,7 @@ async def join_computation(
     host: str | None = None,
     protocol: Protocol = Protocol.SHAMIR,
     program_name: ProgramName = ProgramName.PRIVATE_PATH_QUERY,
+    test_name: str | None = None,
 ) -> ComputationResult:
     """
     Join an MPC computation as a party and execute the specified program.
@@ -849,6 +1014,10 @@ async def join_computation(
     if process.returncode == 0:
         out_str = stdout_data.decode()
         print(out_str)  # Print for debug visibility
+        if program_name == ProgramName.FIND_SAFE_PATH:
+            _write_matsat_trace_artifacts(
+                out_str, run_name=program_name.value, test_name=test_name
+            )
         result: ComputationResult = parse_output(out_str, program_name)
         return result
     else:
@@ -886,6 +1055,7 @@ async def join_computation_find_safe_path(
     protocol: Protocol = Protocol.SHAMIR,
     compile_program: bool = True,
     weighted: bool | None = None,
+    test_name: str | None = None,
 ) -> ComputationResult:
     """
     Dedicated join path for FIND_SAFE_PATH (matsat).
@@ -962,4 +1132,5 @@ async def join_computation_find_safe_path(
         host=host,
         protocol=protocol,
         program_name=ProgramName.FIND_SAFE_PATH,
+        test_name=test_name,
     )

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 
 from logic4e import to_cnf, conjuncts, disjuncts
@@ -87,11 +88,32 @@ def _verify_result_and_print(
     T: int,
     V: int,
     symbols: list[Expr] | None = None,
+    start: int | None = None,
+    goal: int | None = None,
+    domain_edges: list[Edge] | None = None,
+    bob_edges_by_party: list[list[Edge]] | None = None,
 ):
     if result is None:
         return
     if result.u_vector is not None:
         _print_assignments_from_u_vector(result.u_vector, T=T, V=V, symbols=symbols)
+        # Show clause reassembly with violated clauses if we have the necessary info
+        if (
+            start is not None
+            and goal is not None
+            and domain_edges is not None
+            and bob_edges_by_party is not None
+            and all(v in (0, 1) for v in result.u_vector)
+        ):
+            _print_clause_reassembly_from_u_vector(
+                u_vector=result.u_vector,
+                T=T,
+                V=V,
+                start=start,
+                goal=goal,
+                domain_edges=domain_edges,
+                bob_edges_by_party=bob_edges_by_party,
+            )
     assert bool(result.is_solved) is bool(expect_sat)
     assert result.information_gain == 0.0
 
@@ -114,6 +136,14 @@ def _unknown_domain_edges_from_graph(graph: Graph) -> list[Edge]:
     ]
 
 
+def _detect_test_name() -> str | None:
+    """Walk call stack to find the first function starting with 'test_'."""
+    for frame_info in inspect.stack():
+        if frame_info.function.startswith("test_"):
+            return frame_info.function
+    return None
+
+
 async def _run_find_safe_path_helper(
     graphs: list[Graph],
     start: Vertex,
@@ -124,7 +154,12 @@ async def _run_find_safe_path_helper(
     use_edge_domain: bool = False,
     public_domain_edges: list[Edge] | None = None,
     weighted: bool = True,
+    test_name: str | None = None,
 ) -> ComputationResult:
+    # Auto-detect test name from call stack if not provided
+    if test_name is None:
+        test_name = _detect_test_name()
+
     num_parties = len(graphs) + 1
     compact_pairs = None
     if use_edge_domain:
@@ -164,6 +199,7 @@ async def _run_find_safe_path_helper(
                 compile_program=False,
                 port=port,
                 weighted=weighted,
+                test_name=test_name,
             )
         )
     ]
@@ -177,6 +213,7 @@ async def _run_find_safe_path_helper(
                     compile_program=False,
                     port=port,
                     weighted=weighted,
+                    test_name=test_name,
                 )
             )
         )
@@ -195,7 +232,12 @@ async def _run_find_safe_path_compare_modes(
     public_domain_edges: list[Edge] | None = None,
     mode: str | None = None,
     weighted: bool = True,
+    test_name: str | None = None,
 ) -> tuple[ComputationResult | None, ComputationResult | None]:
+    # Auto-detect test name from call stack if not provided
+    if test_name is None:
+        test_name = _detect_test_name()
+
     selected_mode = _resolve_mode(mode)
     baseline: ComputationResult | None = None
     optimized: ComputationResult | None = None
@@ -217,6 +259,7 @@ async def _run_find_safe_path_compare_modes(
             port=port,
             use_edge_domain=False,
             weighted=weighted,
+            test_name=test_name,
         )
     if effective_mode in ("optimized", "both"):
         domain = public_domain_edges or _unknown_domain_edges_from_graph(graphs[0])
@@ -230,6 +273,7 @@ async def _run_find_safe_path_compare_modes(
             use_edge_domain=True,
             public_domain_edges=domain,
             weighted=weighted,
+            test_name=test_name,
         )
 
     print(
@@ -344,7 +388,7 @@ def _assert_optimized_result(
     domain_edges: list[Edge],
     bob_edges: list[Edge] | None = None,
     bob_edges_by_party: list[list[Edge]] | None = None,
-    print_bob_cnf: bool = False,
+    print_cnf: bool = False,
 ):
     assert optimized is not None
     compact_pairs = directed_pairs_from_edges(domain_edges, V)
@@ -371,7 +415,7 @@ def _assert_optimized_result(
             if bob_edges_by_party is not None
             else [bob_edges] if bob_edges is not None else []
         )
-        if print_bob_cnf:
+        if print_cnf:
             print("=== build_physics_q: Physics payload ===")
             build_physics_q(
                 T=T,
