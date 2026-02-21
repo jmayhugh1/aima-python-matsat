@@ -5,14 +5,14 @@ from private_path_query_logic import (
     physics,
     bob_physics,
     alice_physics,
-    Move,
-    Wait,
-    At,
+    PosBit,
+    num_bits,
     Active,
     Allowed,
     directed_pairs_from_edges,
     ordered_symbols,
     assignment_from_u_vector,
+    decode_path_from_assignment,
     build_q,
     build_physics_q,
     build_bob_q,
@@ -379,9 +379,9 @@ def test_ordered_symbols_is_deterministic():
     assert syms_1 == syms_2
 
     # Spot-check expected prefix/suffix ordering by category.
-    assert syms_1[0] == At(0, 0)
-    assert syms_1[1] == At(0, 1)
-    assert syms_1[2] == At(0, 2)
+    assert syms_1[0] == PosBit(0, 0)
+    assert syms_1[1] == PosBit(0, 1)
+    assert syms_1[2] == PosBit(1, 0)
     assert syms_1[-1] == Allowed(2, 1)
 
 
@@ -393,14 +393,8 @@ def test_ordered_symbols_exact_small_case():
     syms = ordered_symbols(T=1, V=2)
     got = [str(s) for s in syms]
     expected = [
-        "At(0, 0)",
-        "At(0, 1)",
-        "At(1, 0)",
-        "At(1, 1)",
-        "Move(0, 0, 1)",
-        "Move(0, 1, 0)",
-        "Wait(0, 0)",
-        "Wait(0, 1)",
+        "PosBit(0, 0)",
+        "PosBit(1, 0)",
         "Active(0, 1)",
         "Active(1, 0)",
         "Allowed(0, 1)",
@@ -413,21 +407,16 @@ def test_assignment_from_u_vector_exact_small_case():
     T, V = 1, 2
     syms = ordered_symbols(T, V)
     # Matches the golden symbol order exactly.
-    u_vector = [1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1, 0]
+    u_vector = [0, 1, 1, 0, 1, 0]
     assignment = assignment_from_u_vector(u_vector=u_vector, T=T, V=V, symbols=syms)
 
-    assert assignment[At(0, 0)] is True
-    assert assignment[At(0, 1)] is False
-    assert assignment[At(1, 0)] is False
-    assert assignment[At(1, 1)] is True
-    assert assignment[Move(0, 0, 1)] is True
-    assert assignment[Move(0, 1, 0)] is False
-    assert assignment[Wait(0, 0)] is False
-    assert assignment[Wait(0, 1)] is True
+    assert assignment[PosBit(0, 0)] is False
+    assert assignment[PosBit(1, 0)] is True
     assert assignment[Active(0, 1)] is True
     assert assignment[Active(1, 0)] is False
     assert assignment[Allowed(0, 1)] is True
     assert assignment[Allowed(1, 0)] is False
+    assert decode_path_from_assignment(assignment, T=T, V=V) == [0, 1]
 
 
 def test_build_q_block_shapes_and_vertical_concat():
@@ -456,7 +445,7 @@ def test_build_q_block_shapes_and_vertical_concat():
 
 
 def test_build_q_alice_unit_clauses_present():
-    """Alice block should include At(0,start) and At(T,goal) as positive unit clauses."""
+    """Alice block should encode start/goal bit-unit clauses."""
     vertices = [Vertex(i) for i in range(3)]
     edges = [Edge(vertices[0], vertices[1], EdgeState.TRAVERSABLE)]
     T, V = 2, 3
@@ -464,22 +453,22 @@ def test_build_q_alice_unit_clauses_present():
     _, syms, blocks = build_q(start=start, goal=goal, T=T, V=V, edges=edges)
 
     n = len(syms)
-    idx_start = syms.index(At(0, start))
-    idx_goal = syms.index(At(T, goal))
-
+    b = num_bits(V)
     alice = blocks["alice"]
-    assert (
-        alice[:, idx_start] == 1
-    ).any(), "Missing At(0,start) unit clause in Alice block"
-    assert (
-        alice[:, idx_goal] == 1
-    ).any(), "Missing At(T,goal) unit clause in Alice block"
 
-    # For those unit clauses, there should be no negated occurrence in the same row.
-    start_rows = [i for i in range(alice.shape[0]) if alice[i, idx_start] == 1]
-    goal_rows = [i for i in range(alice.shape[0]) if alice[i, idx_goal] == 1]
-    assert any(alice[i, n + idx_start] == 0 for i in start_rows)
-    assert any(alice[i, n + idx_goal] == 0 for i in goal_rows)
+    for k in range(b):
+        start_bit = (start >> k) & 1
+        goal_bit = (goal >> k) & 1
+        idx_start_bit = syms.index(PosBit(0, k))
+        idx_goal_bit = syms.index(PosBit(T, k))
+        if start_bit == 1:
+            assert (alice[:, idx_start_bit] == 1).any()
+        else:
+            assert (alice[:, n + idx_start_bit] == 1).any()
+        if goal_bit == 1:
+            assert (alice[:, idx_goal_bit] == 1).any()
+        else:
+            assert (alice[:, n + idx_goal_bit] == 1).any()
 
 
 def test_build_q_bob_encodes_edge_state_semantics():
@@ -755,13 +744,8 @@ def _assert_exact_u_vector_order_single_edge_case(
     assert compact_pairs == [(0, 1)]
     # Compact symbol order for T=1, V=2 and one directed pair.
     expected_symbol_order = [
-        "At(0, 0)",
-        "At(0, 1)",
-        "At(1, 0)",
-        "At(1, 1)",
-        "Move(0, 0, 1)",
-        "Wait(0, 0)",
-        "Wait(0, 1)",
+        "PosBit(0, 0)",
+        "PosBit(1, 0)",
         "Active(0, 1)",
         "Allowed(0, 1)",
     ]
@@ -770,7 +754,7 @@ def _assert_exact_u_vector_order_single_edge_case(
     ]
     assert got_symbol_order == expected_symbol_order
 
-    expected_u = [1, 0, 0, 1, 1, 0, 0, 1, 1 if expect_allowed else 0]
+    expected_u = [0, 1, 1, 1 if expect_allowed else 0]
     assert (
         optimized.u_vector == expected_u
     ), f"Expected exact u-vector ordering {expected_u}, got {optimized.u_vector}"
@@ -832,7 +816,7 @@ async def test_optimized_matsat_unsat_single_blocked_edge():
         goal=v1.id,
         domain_edges=domain,
         bob_edges_by_party=[g.to_directed_edges() for g in graphs],
-        print_bob_cnf=True,
+        print_cnf=True,
     )
 
 
@@ -925,7 +909,7 @@ async def test_optimized_matsat_sat_detour_around_blocked_edge():
         goal=v3.id,
         domain_edges=domain,
         bob_edges_by_party=[g.to_directed_edges() for g in graphs],
-        print_bob_cnf=True,
+        print_cnf=True,
     )
 
 
@@ -957,6 +941,7 @@ async def test_optimized_matsat_unsat_disconnected_goal():
         goal=v3.id,
         domain_edges=domain,
         bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+        print_cnf=True,
     )
 
 
@@ -985,4 +970,5 @@ async def test_optimized_matsat_sat_reach_then_wait():
         goal=v1.id,
         domain_edges=domain,
         bob_edges_by_party=[g.to_directed_edges() for g in graphs],
+        print_cnf=True,
     )

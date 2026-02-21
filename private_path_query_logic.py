@@ -1,6 +1,7 @@
 from utils4e import Expr
-from logic4e import implies, equiv, to_cnf, conjuncts, disjuncts
+from logic4e import implies, to_cnf, conjuncts, disjuncts
 from typing import List, Dict, Tuple
+import math
 import numpy as np
 from private_path_query_utils import EdgeState, Edge
 
@@ -22,6 +23,23 @@ def Move(t: int, u: int, v: int) -> Expr:
 
 def Wait(t: int, v: int) -> Expr:
     return Expr("Wait", t, v)
+
+
+def PosBit(t: int, k: int) -> Expr:
+    """
+    Bit-level position atom.
+
+    Semantics:
+      - `PosBit(t, k)` is True iff the k-th bit of the agent's vertex id at time `t`
+        is 1, where `k=0` is the least-significant bit.
+      - The full position at time `t` is reconstructed by reading all bits:
+            pos(t) = sum(2**k for k if PosBit(t, k) is True)
+
+    Example for V=5 -> b=3 bits:
+      - vertex 3 (binary 011) means:
+            PosBit(t,0)=True, PosBit(t,1)=True, PosBit(t,2)=False
+    """
+    return Expr("PosBit", t, k)
 
 
 def Active(u: int, v: int) -> Expr:
@@ -52,6 +70,18 @@ def directed_pairs_from_edges(edges: List[Edge], V: int) -> List[Tuple[int, int]
     return pairs
 
 
+def num_bits(V: int) -> int:
+    """
+    Number of bits required to encode vertex ids in [0, V-1].
+
+    We use the minimum fixed width `b = ceil(log2(V))`, with a floor of 1.
+    Codes in [V, 2**b - 1] are invalid and are excluded by range clauses.
+    """
+    if V <= 0:
+        raise ValueError("V must be positive")
+    return max(1, math.ceil(math.log2(V)))
+
+
 def _exactly_one(vars: List[Expr]) -> List[Expr]:
     """Return CNF enforcing exactly one of the given literals is True."""
     clauses: List[Expr] = []
@@ -71,74 +101,127 @@ def _exactly_one(vars: List[Expr]) -> List[Expr]:
     return clauses
 
 
-def physics(
+def forbid_code(t: int, c: int, b: int) -> Expr:
+    """
+    Return one clause that forbids `pos(t) == c` for a b-bit encoding.
+
+    If `c` has target bits l_0..l_(b-1), this builds:
+      (~l_0 OR ~l_1 OR ... OR ~l_(b-1))
+    so the exact codeword `c` cannot be assigned.
+    """
+    clause = None
+    for k in range(b):
+        bit = (c >> k) & 1
+        lit = PosBit(t, k) if bit == 1 else ~PosBit(t, k)
+        term = ~lit
+        clause = term if clause is None else (clause | term)
+    assert clause is not None
+    return clause
+
+
+def force_pos_const(t: int, v: int, b: int) -> List[Expr]:
+    """
+    Unit clauses fixing `pos(t)` to constant vertex id `v`.
+
+    This is the bit-encoded replacement for one-hot constraints like `At(t, v)`.
+    """
+    clauses: List[Expr] = []
+    for k in range(b):
+        bit = (v >> k) & 1
+        clauses.append(PosBit(t, k) if bit == 1 else ~PosBit(t, k))
+    return clauses
+
+
+def eq_pos_const(t: int, u: int, b: int) -> Expr:
+    """
+    Expression encoding the equality test `pos(t) == u`.
+
+    This is a conjunction over bits, not a new SAT variable:
+      AND_k (PosBit(t,k) if bit_k(u)=1 else ~PosBit(t,k))
+    """
+    conj = None
+    for k in range(b):
+        bit = (u >> k) & 1
+        lit = PosBit(t, k) if bit == 1 else ~PosBit(t, k)
+        conj = lit if conj is None else (conj & lit)
+    assert conj is not None
+    return conj
+
+
+def physics_bits(
     T: int, V: int, directed_pairs: List[Tuple[int, int]] | None = None
 ) -> List[Expr]:
     """
-    Propositional dynamics for a single agent moving on a directed graph.
+    Position-bit dynamics for a single agent moving on a directed graph.
 
     Args:
         T: time horizon (number of steps).
         V: number of vertices (assumed to be 0..V-1).
 
     Returns:
-        List of logical formulas encoding:
-          - exactly-one At(t, ·) for each t
-          - exactly-one action per t: either Move(t, u, v) over all u!=v, or Wait(t, v)
-          - transition preconditions:
-                Move(t,u,v) -> At(t,u)
-                Wait(t,v) -> At(t,v)
-                Move(t,u,v) -> Allowed(u,v)
-          - edge consistency:
-                Allowed(u,v) -> Active(u,v)
-          - successor-state axiom for each vertex/time:
-                At(t+1,v) <-> (Wait(t,v) OR OR_u Move(t,u,v))
+        List of formulas encoding:
+          - bit semantics: PosBit(t, k) collectively represent vertex id at time t
+          - range restriction for position bits (disallow invalid vertex codes)
+          - transition feasibility: pos(t)=u -> OR_{v in adj[u]} pos(t+1)=v
+          - edge legality: (pos(t)=u & pos(t+1)=v) -> Allowed(u,v) for directed edges
+          - edge consistency: Allowed(u,v) -> Active(u,v)
+
+    Notes:
+      - Wait is implicit via self-loop successor `u -> u`.
+      - No one-hot `At/Move/Wait` variables are required in the core encoding.
     """
     formulas: List[Expr] = []
     directed_pairs = directed_pairs or [
         (u, v) for u in range(V) for v in range(V) if u != v
     ]
+    b = num_bits(V)
 
-    # 1) Exactly-one position at each time step
+    # 1) Range restriction: disallow codes >= V.
+    max_code = 1 << b
     for t in range(T + 1):
-        at_literals = [At(t, v) for v in range(V)]
-        formulas.extend(_exactly_one(at_literals))
+        for c in range(V, max_code):
+            formulas.append(forbid_code(t, c, b))
 
-    # 2) Exactly-one action per time step (move or wait-at-vertex)
+    # Build adjacency domain and include wait transitions.
+    adj: Dict[int, List[int]] = {u: [] for u in range(V)}
+    for u, v in directed_pairs:
+        adj[u].append(v)
+    for u in range(V):
+        if u not in adj[u]:
+            adj[u].append(u)
+
+    # 2) Transition feasibility: pos(t)=u -> OR_{v in adj[u]} pos(t+1)=v
     for t in range(T):
-        action_literals = [Move(t, u, v) for (u, v) in directed_pairs] + [
-            Wait(t, v) for v in range(V)
-        ]
-        formulas.extend(_exactly_one(action_literals))
+        for u in range(V):
+            lhs = eq_pos_const(t, u, b)
+            succs = adj[u]
+            rhs = eq_pos_const(t + 1, succs[0], b)
+            for v in succs[1:]:
+                rhs = rhs | eq_pos_const(t + 1, v, b)
+            formulas.append(implies(lhs, rhs))
 
-    # 3) Local transition preconditions for each possible move.
+    # 3) Edge legality and consistency.
     for t in range(T):
         for u, v in directed_pairs:
-            m = Move(t, u, v)
-            # If we move u->v at time t, we must be at u at time t
-            formulas.append(implies(m, At(t, u)))
-            # ...and the edge must be allowed for traversal
-            formulas.append(implies(m, Allowed(u, v)))
-            # Allowed traversal implies edge exists.
-            formulas.append(implies(Allowed(u, v), Active(u, v)))
-
-    # 4) Wait preconditions
-    for t in range(T):
-        for v in range(V):
-            w = Wait(t, v)
-            formulas.append(implies(w, At(t, v)))
-
-    # 5) Successor-state axiom:
-    #    At(t+1,v) <-> (Wait(t,v) OR incoming Move(t,*,v))
-    for t in range(T):
-        for v in range(V):
-            incoming_moves = [Move(t, u, w) for (u, w) in directed_pairs if w == v]
-            disj = Wait(t, v)
-            for m in incoming_moves:
-                disj = disj | m
-            formulas.append(equiv(At(t + 1, v), disj))
+            formulas.append(
+                implies(
+                    eq_pos_const(t, u, b) & eq_pos_const(t + 1, v, b),
+                    Allowed(u, v),
+                )
+            )
+    for u, v in directed_pairs:
+        formulas.append(implies(Allowed(u, v), Active(u, v)))
 
     return formulas
+
+
+def physics(
+    T: int, V: int, directed_pairs: List[Tuple[int, int]] | None = None
+) -> List[Expr]:
+    """
+    Compatibility wrapper; primary encoding is position-bit based.
+    """
+    return physics_bits(T=T, V=V, directed_pairs=directed_pairs)
 
 
 def bob_physics(
@@ -206,9 +289,9 @@ def alice_physics(start: int, goal: int, T: int, V: int) -> List[Expr]:
         V: number of vertices (unused but kept for symmetry / future use).
 
     Returns:
-        Formulas enforcing:
-          - At(0, start)
-          - At(T, goal)  (goal must be true exactly at time T)
+        Bit-level unit clauses enforcing:
+          - pos(0) == start
+          - pos(T) == goal
     """
     if T < 0:
         raise ValueError("T must be non-negative")
@@ -217,11 +300,8 @@ def alice_physics(start: int, goal: int, T: int, V: int) -> List[Expr]:
     if not (0 <= goal < V):
         raise ValueError("goal must be in [0, V-1]")
 
-    formulas: List[Expr] = []
-    formulas.append(At(0, start))
-    formulas.append(At(T, goal))
-
-    return formulas
+    b = num_bits(V)
+    return force_pos_const(0, start, b) + force_pos_const(T, goal, b)
 
 
 def ordered_symbols(
@@ -229,28 +309,19 @@ def ordered_symbols(
 ) -> List[Expr]:
     """
     Deterministic variable ordering for Q columns:
-      1) At(t,v)
-      2) Move(t,u,v), u!=v
-      3) Wait(t,v)
-      4) Active(u,v), u!=v
-      5) Allowed(u,v), u!=v
+      1) PosBit(t,k)
+      2) Active(u,v), u!=v
+      3) Allowed(u,v), u!=v
     """
     symbols: List[Expr] = []
     directed_pairs = directed_pairs or [
         (u, v) for u in range(V) for v in range(V) if u != v
     ]
+    b = num_bits(V)
 
     for t in range(T + 1):
-        for v in range(V):
-            symbols.append(At(t, v))
-
-    for t in range(T):
-        for u, v in directed_pairs:
-            symbols.append(Move(t, u, v))
-
-    for t in range(T):
-        for v in range(V):
-            symbols.append(Wait(t, v))
+        for k in range(b):
+            symbols.append(PosBit(t, k))
 
     for u, v in directed_pairs:
         symbols.append(Active(u, v))
@@ -282,6 +353,26 @@ def assignment_from_u_vector(
             f"u_vector length ({len(u_vector)}) must equal num symbols ({len(syms)})"
         )
     return {sym: bool(int(val)) for sym, val in zip(syms, u_vector)}
+
+
+def decode_path_from_assignment(assn: Dict[Expr, bool], T: int, V: int) -> List[int]:
+    """
+    Decode vertex ids from a symbol assignment using PosBit atoms.
+
+    For each time t, reconstruct:
+      path[t] = sum(2**k for k where PosBit(t,k) is True)
+
+    With range restrictions active, each decoded value should be in [0, V-1].
+    """
+    b = num_bits(V)
+    path: List[int] = []
+    for t in range(T + 1):
+        value = 0
+        for k in range(b):
+            if assn.get(PosBit(t, k), False):
+                value |= 1 << k
+        path.append(value)
+    return path
 
 
 def _flatten_cnf_clauses(formulas: List[Expr]) -> List[Expr]:

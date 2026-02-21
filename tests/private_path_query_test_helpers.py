@@ -6,8 +6,7 @@ from logic4e import to_cnf, conjuncts, disjuncts
 from utils4e import Expr
 
 from private_path_query_logic import (
-    Move,
-    Wait,
+    force_pos_const,
     physics,
     bob_physics,
     alice_physics,
@@ -17,6 +16,7 @@ from private_path_query_logic import (
     directed_pairs_from_edges,
     ordered_symbols,
     assignment_from_u_vector,
+    decode_path_from_assignment,
     HARD_CLAUSE_WEIGHT,
     SOFT_CLAUSE_WEIGHT,
 )
@@ -39,37 +39,22 @@ def _and_all(clauses):
 
 
 def _force_graph_path_moves(path: GraphPath):
-    """Constrain timestep t to take the t-th edge in GraphPath."""
-    return [
-        Move(t, edge.vertex1.id, edge.vertex2.id) for t, edge in enumerate(path.moves)
-    ]
-
-
-def _sat_moves_from_model(model, T: int, V: int):
-    """Collect all Move(t,u,v)=True assignments from a SAT model."""
-    moves = []
-    for t in range(T):
-        for u in range(V):
-            for v in range(V):
-                if u == v:
-                    continue
-                m = Move(t, u, v)
-                if model.get(m) is True:
-                    moves.append((t, u, v))
-    return moves
+    """Constrain position bits to follow the concrete vertex sequence in GraphPath."""
+    if not path.moves:
+        return []
+    vertices = [path.start.id] + [edge.vertex2.id for edge in path.moves]
+    max_vertex = max(vertices)
+    b = 1 if max_vertex <= 1 else max_vertex.bit_length()
+    clauses = []
+    for t, vertex_id in enumerate(vertices):
+        clauses.extend(force_pos_const(t=t, v=vertex_id, b=b))
+    return clauses
 
 
 def _print_sat_moves(model, T: int, V: int):
-    timeline = []
-    for t, u, v in _sat_moves_from_model(model, T, V):
-        timeline.append((t, f"MOVE {u}->{v}"))
-    for t in range(T):
-        for v in range(V):
-            w = Wait(t, v)
-            if model.get(w) is True:
-                timeline.append((t, f"WAIT at {v}"))
-    timeline.sort(key=lambda x: x[0])
-    print(f"SAT action timeline: {timeline}")
+    path = decode_path_from_assignment(model, T=T, V=V)
+    timeline = [(t, f"POS={path[t]}") for t in range(len(path))]
+    print(f"SAT position timeline: {timeline}")
 
 
 def _print_assignments_from_u_vector(
@@ -126,7 +111,9 @@ def _resolve_mode(mode: str | None = None) -> str | None:
     if selected == "full":
         selected = "baseline"
     if selected not in {"baseline", "optimized", "both"}:
-        raise ValueError("mode must be one of: baseline/full, optimized, both, or empty")
+        raise ValueError(
+            "mode must be one of: baseline/full, optimized, both, or empty"
+        )
     return selected
 
 
