@@ -9,5 +9,5 @@ pis:
       ansible_user: bob
     charlie:
       ansible_user: charlie
-    diana:
-      ansible_user: diana
+    # diana:
+    #   ansible_user: diana

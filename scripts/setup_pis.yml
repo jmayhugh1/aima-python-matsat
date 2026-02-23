@@ -10,7 +10,7 @@
 
   tasks:
     - name: Bootstrap python packaging (required for Ansible modules)
-      ansible.builtin.raw: sudo apt-get update && sudo apt-get install -y python3-packaging
+      ansible.builtin.raw: sudo apt-get -o Acquire::Retries=0 -o Acquire::http::Timeout=5 update && sudo apt-get install -y python3-packaging
       changed_when: false
       become: yes
 
@@ -37,7 +37,7 @@
           - valgrind
           - wget
         state: present
-        update_cache: yes
+        update_cache: no
         cache_valid_time: 3600
         lock_timeout: 300
       become: yes
@@ -46,9 +46,11 @@
       ansible.builtin.git:
         repo: "{{ repo_url }}"
         dest: "{{ repo_dest }}"
-        version: mat_sat
+        version: log_encoding
         update: yes
         force: yes
+        depth: 1
+        accept_hostkey: yes
 
     - name: Ensure repo ownership is correct
       ansible.builtin.file:
@@ -63,15 +65,14 @@
       ansible.builtin.shell:
         cmd: "git pull"
         chdir: "{{ repo_dest }}"
+      changed_when: false
 
     - name: Update submodules with remote
       ansible.builtin.shell:
-        cmd: "git submodule update --init --recursive --remote --jobs 4 --depth 1"
+        cmd: "git submodule update --init --recursive --remote --force --jobs 4 --depth 1"
         chdir: "{{ repo_dest }}"
       register: submodule_update
-      retries: 5
-      delay: 10
-      until: submodule_update.rc == 0
+      changed_when: false
 
     - name: Clean MP-SPDZ CONFIG.mine
       ansible.builtin.file:
@@ -96,6 +97,13 @@
           MY_LDLIBS += -Wl,-rpath -Wl,/usr/local/lib -L/usr/local/lib
         marker: "# {mark} ANSIBLE MANAGED BLOCK for MP-SPDZ CONFIG.mine"
 
+    - name: Check if ipython is installed
+      ansible.builtin.shell:
+        cmd: "pip3 show ipython"
+      register: ipython_check
+      failed_when: false
+      changed_when: false
+
     - name: Install Python dependencies
       ansible.builtin.pip:
         name:
@@ -104,21 +112,28 @@
         state: latest
         executable: pip3
         extra_args: "--break-system-packages"
+      when: ipython_check.rc != 0
 
     - name: Initialize libOTe submodule
       ansible.builtin.shell:
-        cmd: "git submodule update --init --recursive --jobs 4 --depth 1 deps/libOTe"
+        cmd: "git submodule update --init --recursive --remote --force --jobs 4 --depth 1 deps/libOTe"
         chdir: "{{ repo_dest }}/MP-SPDZ"
       register: libote_update
       retries: 5
       delay: 10
       until: libote_update.rc == 0
 
+    - name: Check if dependencies are already compiled (libOTe)
+      ansible.builtin.stat:
+        path: "{{ repo_dest }}/MP-SPDZ/local/lib/liblibOTe.a"
+      register: libote_compiled
+
     - name: Ensure Boost directory exists
       ansible.builtin.file:
         path: "{{ repo_dest }}/MP-SPDZ/deps/libOTe/cryptoTools/thirdparty"
         state: directory
         mode: '0755'
+      when: not libote_compiled.stat.exists
 
     - name: Check if Boost archive exists
       ansible.builtin.stat:
@@ -127,9 +142,10 @@
 
     - name: Download Boost 1.83.0
       ansible.builtin.get_url:
-        url: "https://sourceforge.net/projects/boost/files/boost/1.83.0/boost_1_83_0.tar.bz2/download"
+        url: "https://archives.boost.io/release/1.83.0/source/boost_1_83_0.tar.bz2"
         dest: "{{ repo_dest }}/MP-SPDZ/deps/libOTe/cryptoTools/thirdparty/boost_1_83_0.tar.bz2"
-      when: not boost_archive.stat.exists
+        timeout: 60
+      when: not libote_compiled.stat.exists and not boost_archive.stat.exists
 
     - name: Compile dependencies (Boost, libOTe)
       ansible.builtin.shell:
@@ -137,6 +153,8 @@
         chdir: "{{ repo_dest }}/MP-SPDZ"
       args:
         creates: "{{ repo_dest }}/MP-SPDZ/local/lib/liblibOTe.a"
+      async: 7200
+      poll: 10
 
     - name: Generate SSL keys
       ansible.builtin.shell:
