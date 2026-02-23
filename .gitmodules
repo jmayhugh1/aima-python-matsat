@@ -7,6 +7,6 @@
 	branch = master
 [submodule "searobotics_surveyor"]
 	path = searobotics_surveyor
-	url = https://github.com/smolinad/searobotics_surveyor.git 
+	url = https://github.com/smolinad/searobotics_surveyor.git
 	branch = main
 
