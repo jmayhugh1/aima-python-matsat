@@ -5,3 +5,8 @@
 	path = MP-SPDZ
 	url = https://github.com/jmayhugh1/MP-SPDZ.git
 	branch = master
+[submodule "searobotics_surveyor"]
+	path = searobotics_surveyor
+	url = https://github.com/smolinad/searobotics_surveyor.git 
+	branch = main
+
