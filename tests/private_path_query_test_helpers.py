@@ -11,14 +11,14 @@ from private_path_query_logic import (
     bob_physics,
     alice_physics,
     build_physics_q,
-    build_bob_q,
-    build_alice_q,
+    _build_bob_q,
+    _build_alice_q,
     directed_pairs_from_edges,
     ordered_symbols,
     assignment_from_u_vector,
     decode_path_from_assignment,
-    HARD_CLAUSE_WEIGHT,
     SOFT_CLAUSE_WEIGHT,
+    compute_hard_clause_weight,
 )
 from private_path_query_utils import (
     Graph,
@@ -131,47 +131,94 @@ def _detect_test_name() -> str | None:
     return None
 
 
+def _make_private_path_info(
+    T: int,
+    V: int,
+    num_bobs: int = 1,
+    use_edge_domain: bool = False,
+    edge_domain_edges: list[Edge] | None = None,
+    weighted: bool = True,
+) -> PrivatePathInfo:
+    """
+    Create a PrivatePathInfo with auto-calculated row counts.
+
+    Args:
+        T: Time horizon
+        V: Number of vertices
+        num_bobs: Number of Bob parties (default 1)
+        use_edge_domain: Whether to use edge domain optimization
+        edge_domain_edges: Edges defining the domain (required if use_edge_domain=True)
+        weighted: Whether to use weighted clauses
+
+    Returns:
+        PrivatePathInfo with correctly calculated rows_per_id
+    """
+    num_parties = num_bobs + 1  # Alice + Bobs
+
+    compact_pairs = None
+    if use_edge_domain and edge_domain_edges:
+        compact_pairs = directed_pairs_from_edges(edge_domain_edges, V)
+
+    syms = ordered_symbols(T, V, directed_pairs=compact_pairs)
+
+    # Calculate row counts using internal helpers
+    q_alice, _ = _build_alice_q(start=0, goal=0, T=T, V=V, symbols=syms)
+    q_bob, _ = _build_bob_q(
+        edges=[], T=T, V=V, symbols=syms, directed_pairs=compact_pairs
+    )
+    q_physics, _ = build_physics_q(T=T, V=V, symbols=syms, directed_pairs=compact_pairs)
+
+    alice_rows = int(q_physics.shape[0] + q_alice.shape[0])
+    bob_rows = int(q_bob.shape[0])
+
+    return PrivatePathInfo(
+        num_parties=num_parties,
+        T=T,
+        V=V,
+        rows_per_id=[alice_rows] + [bob_rows] * num_bobs,
+        use_weight_vector=weighted,
+        use_edge_domain=use_edge_domain,
+        edge_domain_edges=edge_domain_edges,
+    )
+
+
 async def _run_find_safe_path_helper(
+    info: PrivatePathInfo,
     graphs: list[Graph],
     start: Vertex,
     goal: Vertex,
-    T: int,
-    V: int,
     port: int = 5003,
-    use_edge_domain: bool = False,
-    public_domain_edges: list[Edge] | None = None,
     weighted: bool = True,
     test_name: str | None = None,
 ) -> ComputationResult:
+    """
+    Run find_safe_path with PrivatePathInfo.
+
+    Args:
+        info: PrivatePathInfo containing T, V, edge_domain, rows_per_id, etc.
+        graphs: List of graphs for each Bob party
+        start: Start vertex (Alice's private input)
+        goal: Goal vertex (Alice's private input)
+        port: Port for MPC communication
+        weighted: Whether to use weighted clauses
+        test_name: Optional test name for logging
+    """
     # Auto-detect test name from call stack if not provided
     if test_name is None:
         test_name = _detect_test_name()
 
-    num_parties = len(graphs) + 1
-    compact_pairs = None
-    if use_edge_domain:
-        domain_edges = public_domain_edges or []
-        compact_pairs = directed_pairs_from_edges(domain_edges, V)
-    syms = ordered_symbols(T, V, directed_pairs=compact_pairs)
-    q_alice, _ = build_alice_q(start=start.id, goal=goal.id, T=T, V=V, symbols=syms)
-    q_bob, _ = build_bob_q(
-        edges=[], T=T, V=V, symbols=syms, directed_pairs=compact_pairs
-    )
-    q_physics, _ = build_physics_q(T=T, V=V, symbols=syms, directed_pairs=compact_pairs)
-    alice_rows = int(q_physics.shape[0] + q_alice.shape[0])
-    bob_rows = int(q_bob.shape[0])
-    info = PrivatePathInfo(
-        num_parties=num_parties,
-        T=T,
-        V=V,
-        rows_per_id=[alice_rows] + [bob_rows] * (num_parties - 1),
-        use_weight_vector=weighted,
-        use_edge_domain=use_edge_domain,
-        edge_domain_edges=public_domain_edges,
-    )
+    # Validate info matches graphs
+    assert (
+        info.num_parties == len(graphs) + 1
+    ), f"PrivatePathInfo.num_parties={info.num_parties} but got {len(graphs)} graphs (expected {info.num_parties - 1})"
 
-    print("Total Columns in Q Matrix:", len(syms) * 2)
-    print("Total Rows in Q matrix:", sum(info.rows_per_id))
+    # Calculate columns: 2 * number of symbols
+    directed_pairs = info.edge_domain_pairs() if info.use_edge_domain else None
+    syms = ordered_symbols(info.T, info.V, directed_pairs=directed_pairs)
+    num_columns = 2 * len(syms)
+
+    print(f"Total Columns in Q Matrix: {num_columns} (symbols={len(syms)})")
+    print(f"Total Rows in Q matrix: {sum(info.rows_per_id)}")
 
     ok = await compile_find_safe_path(private_path_info=info, weighted=weighted)
     assert ok
@@ -210,17 +257,28 @@ async def _run_find_safe_path_helper(
 
 
 async def _run_find_safe_path_compare_modes(
+    info: PrivatePathInfo,
     graphs: list[Graph],
     start: Vertex,
     goal: Vertex,
-    T: int,
-    V: int,
     port: int,
-    public_domain_edges: list[Edge] | None = None,
     mode: str | None = None,
     weighted: bool = True,
     test_name: str | None = None,
 ) -> tuple[ComputationResult | None, ComputationResult | None]:
+    """
+    Run find_safe_path comparing baseline vs optimized modes.
+
+    Args:
+        info: PrivatePathInfo containing T, V, edge_domain, etc.
+        graphs: List of graphs for each Bob party
+        start: Start vertex
+        goal: Goal vertex
+        port: Base port for MPC communication
+        mode: "baseline", "optimized", or "both" (auto-detected if None)
+        weighted: Whether to use weighted clauses
+        test_name: Optional test name for logging
+    """
     # Auto-detect test name from call stack if not provided
     if test_name is None:
         test_name = _detect_test_name()
@@ -229,36 +287,48 @@ async def _run_find_safe_path_compare_modes(
     baseline: ComputationResult | None = None
     optimized: ComputationResult | None = None
 
-    auto_mode = (
-        "optimized"
-        if (public_domain_edges is not None and len(public_domain_edges) > 0)
-        else "baseline"
-    )
+    auto_mode = "optimized" if info.use_edge_domain else "baseline"
     effective_mode = selected_mode or auto_mode
 
     if effective_mode in ("baseline", "both"):
+        # Create baseline info (no edge domain)
+        baseline_info = _make_private_path_info(
+            T=info.T,
+            V=info.V,
+            num_bobs=len(graphs),
+            use_edge_domain=False,
+            weighted=weighted,
+        )
         baseline = await _run_find_safe_path_helper(
+            info=baseline_info,
             graphs=graphs,
             start=start,
             goal=goal,
-            T=T,
-            V=V,
             port=port,
-            use_edge_domain=False,
             weighted=weighted,
             test_name=test_name,
         )
     if effective_mode in ("optimized", "both"):
-        domain = public_domain_edges or _unknown_domain_edges_from_graph(graphs[0])
+        # Use provided info or create optimized info
+        optimized_info = (
+            info
+            if info.use_edge_domain
+            else _make_private_path_info(
+                T=info.T,
+                V=info.V,
+                num_bobs=len(graphs),
+                use_edge_domain=True,
+                edge_domain_edges=info.edge_domain_edges
+                or _unknown_domain_edges_from_graph(graphs[0]),
+                weighted=weighted,
+            )
+        )
         optimized = await _run_find_safe_path_helper(
+            info=optimized_info,
             graphs=graphs,
             start=start,
             goal=goal,
-            T=T,
-            V=V,
             port=port + 1,
-            use_edge_domain=True,
-            public_domain_edges=domain,
             weighted=weighted,
             test_name=test_name,
         )
@@ -302,6 +372,7 @@ def _print_clause_reassembly_from_u_vector(
     goal: int,
     domain_edges: list[Edge],
     bob_edges_by_party: list[list[Edge]],
+    num_parties: int | None = None,
 ):
     compact_pairs = directed_pairs_from_edges(domain_edges, V)
     symbols = ordered_symbols(T, V, directed_pairs=compact_pairs)
@@ -312,10 +383,13 @@ def _print_clause_reassembly_from_u_vector(
         ("alice", alice_physics(start=start, goal=goal, T=T, V=V)),
     ]
     for party_offset, bob_edges in enumerate(bob_edges_by_party, start=1):
+        bob_formulas, _ = bob_physics(
+            edges=bob_edges, V=V, directed_pairs=compact_pairs
+        )
         block_formulas.append(
             (
                 f"bob[{party_offset}]",
-                bob_physics(edges=bob_edges, V=V, directed_pairs=compact_pairs),
+                bob_formulas,
             )
         )
 
@@ -324,6 +398,10 @@ def _print_clause_reassembly_from_u_vector(
     total_weighted_satisfied = 0.0
     violated_rows: list[str] = []
     violated_allowed_rows: list[str] = []
+
+    # Compute hard clause weight dynamically based on number of parties
+    effective_num_parties = num_parties if num_parties else len(bob_edges_by_party) + 1
+    hard_weight = compute_hard_clause_weight(effective_num_parties)
 
     print("=== Clause reassembly from u_vector ===")
     for block_name, formulas in block_formulas:
@@ -335,7 +413,7 @@ def _print_clause_reassembly_from_u_vector(
                 weight = (
                     SOFT_CLAUSE_WEIGHT
                     if _is_soft_allowed_clause(clause)
-                    else HARD_CLAUSE_WEIGHT
+                    else hard_weight
                 )
                 total += 1
                 block_total += 1
@@ -411,8 +489,8 @@ def _assert_optimized_result(
                 directed_pairs=compact_pairs,
                 print_cnf_clauses=True,
             )
-            print("=== build_alice_q: Alice payload ===")
-            build_alice_q(
+            print("=== _build_alice_q: Alice payload ===")
+            _build_alice_q(
                 start=start,
                 goal=goal,
                 T=T,
@@ -421,8 +499,8 @@ def _assert_optimized_result(
                 print_cnf_clauses=True,
             )
             for party_id, party_bob_edges in enumerate(bob_payloads, start=1):
-                print(f"=== build_bob_q: Bob party {party_id} payload ===")
-                build_bob_q(
+                print(f"=== _build_bob_q: Bob party {party_id} payload ===")
+                _build_bob_q(
                     edges=party_bob_edges,
                     T=T,
                     V=V,

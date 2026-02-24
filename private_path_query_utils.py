@@ -183,9 +183,59 @@ class Edge:
     vertex1: Vertex
     vertex2: Vertex
     state: EdgeState = EdgeState.TRAVERSABLE
+    weight: float | None = (
+        None  # Relative importance weight for this edge (None = use default)
+    )
 
     def __hash__(self):
         return hash(sorted((self.vertex1.id, self.vertex2.id)))
+
+
+def normalize_edge_weights(
+    edges: List["Edge"], total_budget: float = 1.0, default_weight: float = 1.0
+) -> List["Edge"]:
+    """
+    Normalize edge weights so they sum to total_budget.
+
+    Edges with weight=None are treated as having default_weight before normalization.
+    All weights are then scaled proportionally to sum to total_budget.
+
+    Args:
+        edges: List of Edge objects
+        total_budget: Total weight budget to distribute (default 1.0)
+        default_weight: Weight assigned to edges without explicit weight (default 1.0)
+
+    Returns:
+        New list of Edge objects with normalized weights that sum to total_budget
+
+    Example:
+        >>> edges = [
+        ...     Edge(v0, v1, weight=0.5),  # Explicit: high priority
+        ...     Edge(v1, v2, weight=0.3),  # Explicit: medium priority
+        ...     Edge(v2, v3),              # Implicit: uses default_weight=1.0
+        ... ]
+        >>> normalized = normalize_edge_weights(edges, total_budget=1.0)
+        # Weights before normalization: [0.5, 0.3, 1.0] -> sum=1.8
+        # After: [0.278, 0.167, 0.556] -> sum=1.0
+    """
+    if not edges:
+        return edges
+
+    # Compute raw weights (use default for None)
+    raw_weights = [e.weight if e.weight is not None else default_weight for e in edges]
+    total_raw = sum(raw_weights)
+
+    if total_raw <= 0:
+        # Fallback to equal weights
+        equal_weight = total_budget / len(edges)
+        return [Edge(e.vertex1, e.vertex2, e.state, equal_weight) for e in edges]
+
+    # Scale to budget
+    scale = total_budget / total_raw
+    return [
+        Edge(e.vertex1, e.vertex2, e.state, raw_weights[i] * scale)
+        for i, e in enumerate(edges)
+    ]
 
 
 class Graph(Environment):
@@ -1083,12 +1133,18 @@ async def join_computation_find_safe_path(
         build_physics_q,
         build_bob_q,
         build_alice_q,
+        compute_hard_clause_weight,
     )
 
     directed_pairs = private_path_info.edge_domain_pairs()
     syms = ordered_symbols(T, V, directed_pairs=directed_pairs)
+    hard_weight = compute_hard_clause_weight(num_parties)
     q_physics, w_physics = build_physics_q(
-        T, V, symbols=syms, directed_pairs=directed_pairs
+        T,
+        V,
+        symbols=syms,
+        directed_pairs=directed_pairs,
+        hard_clause_weight=hard_weight,
     )
     effective_weighted = (
         private_path_info.use_weight_vector if weighted is None else weighted
@@ -1097,16 +1153,16 @@ async def join_computation_find_safe_path(
     if id == 0:
         if start is None or goal is None:
             raise ValueError("Alice party (id=0) requires start and goal")
-        q_alice, w_alice = build_alice_q(start.id, goal.id, T, V, symbols=syms)
+        q_alice, w_alice = build_alice_q(
+            private_path_info, start=start.id, goal=goal.id, symbols=syms
+        )
         q_party = np.concatenate([q_physics, q_alice], axis=0)
         w_party = np.concatenate([w_physics, w_alice], axis=0)
     else:
         if graph is None:
             raise ValueError("Bob parties (id>0) require graph input")
         bob_edges = graph.to_directed_edges()
-        q_bob, w_bob = build_bob_q(
-            bob_edges, T, V, symbols=syms, directed_pairs=directed_pairs
-        )
+        q_bob, w_bob = build_bob_q(private_path_info, edges=bob_edges, symbols=syms)
         q_party = q_bob
         w_party = w_bob
 

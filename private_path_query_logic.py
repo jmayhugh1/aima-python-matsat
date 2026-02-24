@@ -3,11 +3,28 @@ from logic4e import implies, to_cnf, conjuncts, disjuncts
 from typing import List, Dict, Tuple
 import math
 import numpy as np
-from private_path_query_utils import EdgeState, Edge
+from private_path_query_utils import (
+    EdgeState,
+    Edge,
+    PrivatePathInfo,
+    normalize_edge_weights,
+)
 
 
-HARD_CLAUSE_WEIGHT = 1.0
-SOFT_CLAUSE_WEIGHT = 0.1
+DEFAULT_HARD_CLAUSE_WEIGHT = 1.0
+SOFT_CLAUSE_WEIGHT = 0.3
+
+
+def compute_hard_clause_weight(num_parties: int) -> float:
+    """
+    Compute hard clause weight based on number of parties.
+
+    Hard weight = num_parties + 1, ensuring hard clauses always dominate
+    the total soft clause budget (which is ~1.0 per Bob party).
+
+    Example: Alice + 2 Bobs = 3 parties → hard weight = 4.0
+    """
+    return float(num_parties + 1)
 
 
 # HARD EXPRESSIONS: Must be satisfied
@@ -226,29 +243,31 @@ def physics(
 
 def bob_physics(
     edges: List[Edge], V: int, directed_pairs: List[Tuple[int, int]] | None = None
-) -> List[Expr]:
+) -> Tuple[List[Expr], Dict[Tuple[int, int], float]]:
     """
     Bob's view of edge traversability, with a closed-world assumption.
 
     Args:
-        edges: list of Edge objects carrying Edge.state:
-            0 = no edge
-            1 = edge exists but is not traversable
-            2 = edge exists and is traversable
+        edges: list of Edge objects carrying Edge.state and optional Edge.weight:
+            state 0 = no edge
+            state 1 = edge exists but is not traversable
+            state 2 = edge exists and is traversable
+            weight = relative importance (None uses default SOFT_CLAUSE_WEIGHT)
         V: number of vertices (0..V-1).
 
     Returns:
-        Formulas asserting:
-          - Edge-state mapping:
+        Tuple of:
+          - Formulas asserting:
                 state 2 -> Allowed(u,v) and Active(u,v)
                 state 1 -> Active(u,v) and ¬Allowed(u,v)
                 state 0 -> ¬Active(u,v) and ¬Allowed(u,v)
-          - Active(u,v): edge existence (state in {1,2})
-          - Allowed(u,v): traversal permission (state == 2)
-          - Allowed(u,v) -> Active(u,v) for all u != v
+                Allowed(u,v) -> Active(u,v) for all u != v
+          - Dict mapping (u,v) -> weight for edges with custom weights
     """
     formulas: List[Expr] = []
     edge_states = [[int(EdgeState.NO_EDGE) for _ in range(V)] for _ in range(V)]
+    edge_weights: Dict[Tuple[int, int], float] = {}
+
     for edge in edges:
         u = edge.vertex1.id
         v = edge.vertex2.id
@@ -257,6 +276,8 @@ def bob_physics(
         if u == v:
             continue
         edge_states[u][v] = int(edge.state)
+        if edge.weight is not None:
+            edge_weights[(u, v)] = edge.weight
 
     pair_domain = directed_pairs or [
         (u, v) for u in range(V) for v in range(V) if u != v
@@ -274,7 +295,7 @@ def bob_physics(
             formulas.append(~Allowed(u, v))
         formulas.append(implies(Allowed(u, v), Active(u, v)))
 
-    return formulas
+    return formulas, edge_weights
 
 
 def alice_physics(start: int, goal: int, T: int, V: int) -> List[Expr]:
@@ -406,28 +427,46 @@ def _clauses_to_q(clauses: List[Expr], symbols: List[Expr]) -> np.ndarray:
     return q
 
 
-def _is_exact_not_allowed_clause(clause: Expr) -> bool:
+def _is_exact_not_allowed_clause(clause: Expr) -> Tuple[bool, Tuple[int, int] | None]:
     """
-    Return True iff clause is exactly a negated Allowed(u, v) literal.
+    Return (True, (u, v)) iff clause is exactly a negated Allowed(u, v) literal.
+    Return (False, None) otherwise.
     """
-    return (
+    if (
         clause.op == "~"
         and len(clause.args) == 1
         and clause.args[0].op == "Allowed"
         and len(clause.args[0].args) == 2
-    )
+    ):
+        u, v = clause.args[0].args
+        return True, (int(u), int(v))
+    return False, None
 
 
-def _clause_weights_for_cnf(clauses: List[Expr]) -> np.ndarray:
+def _clause_weights_for_cnf(
+    clauses: List[Expr],
+    edge_weights: Dict[Tuple[int, int], float] | None = None,
+    hard_clause_weight: float = DEFAULT_HARD_CLAUSE_WEIGHT,
+) -> np.ndarray:
     """
     Clause-weight vector aligned with CNF row ordering.
-    - Unit ~Allowed(u,v) clauses are soft.
-    - All other clauses are hard.
+    - Unit ~Allowed(u,v) clauses are soft, with weight from edge_weights if available.
+    - All other clauses are hard (using hard_clause_weight).
+
+    Args:
+        clauses: List of CNF clauses
+        edge_weights: Optional dict mapping (u,v) -> weight for soft clauses
+        hard_clause_weight: Weight for hard clauses (default 1.0, but should be
+                           num_parties + 1 to dominate soft clauses)
     """
-    weights = np.full((len(clauses),), HARD_CLAUSE_WEIGHT, dtype=np.float64)
+    weights = np.full((len(clauses),), hard_clause_weight, dtype=np.float64)
+    edge_weights = edge_weights or {}
+
     for i, clause in enumerate(clauses):
-        if _is_exact_not_allowed_clause(clause):
-            weights[i] = SOFT_CLAUSE_WEIGHT
+        is_not_allowed, edge_pair = _is_exact_not_allowed_clause(clause)
+        if is_not_allowed and edge_pair is not None:
+            # Use custom edge weight if provided, otherwise default
+            weights[i] = edge_weights.get(edge_pair, SOFT_CLAUSE_WEIGHT)
     return weights
 
 
@@ -437,11 +476,14 @@ def build_physics_q(
     symbols: List[Expr] | None = None,
     directed_pairs: List[Tuple[int, int]] | None = None,
     print_cnf_clauses: bool = False,
+    hard_clause_weight: float = DEFAULT_HARD_CLAUSE_WEIGHT,
 ) -> Tuple[np.ndarray, np.ndarray]:
     syms = symbols or ordered_symbols(T, V, directed_pairs=directed_pairs)
     formulas = physics(T, V, directed_pairs=directed_pairs)
     cnf_clauses = _flatten_cnf_clauses(formulas)
-    clause_weights = _clause_weights_for_cnf(cnf_clauses)
+    clause_weights = _clause_weights_for_cnf(
+        cnf_clauses, hard_clause_weight=hard_clause_weight
+    )
     if print_cnf_clauses:
         print("=== build_physics_q: Physics CNF clauses ===")
         clause_idx = 0
@@ -459,18 +501,31 @@ def build_physics_q(
     return q, clause_weights
 
 
-def build_bob_q(
+# =============================================================================
+# Internal helper functions (use build_*_q with PrivatePathInfo for public API)
+# =============================================================================
+
+
+def _build_bob_q(
     edges: List[Edge],
     T: int,
     V: int,
     symbols: List[Expr] | None = None,
     directed_pairs: List[Tuple[int, int]] | None = None,
     print_cnf_clauses: bool = False,
+    hard_clause_weight: float = DEFAULT_HARD_CLAUSE_WEIGHT,
 ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Internal helper: Build Bob's Q matrix from his edge constraints.
+
+    Use build_bob_q() with PrivatePathInfo for the validated public API.
+    """
     syms = symbols or ordered_symbols(T, V, directed_pairs=directed_pairs)
-    formulas = bob_physics(edges, V, directed_pairs=directed_pairs)
+    formulas, edge_weights = bob_physics(edges, V, directed_pairs=directed_pairs)
     cnf_clauses = _flatten_cnf_clauses(formulas)
-    clause_weights = _clause_weights_for_cnf(cnf_clauses)
+    clause_weights = _clause_weights_for_cnf(
+        cnf_clauses, edge_weights=edge_weights, hard_clause_weight=hard_clause_weight
+    )
     if print_cnf_clauses:
         print("=== build_bob_q: Bob physics CNF clauses ===")
         clause_idx = 0
@@ -484,22 +539,32 @@ def build_bob_q(
                 )
                 clause_idx += 1
         print(f"Total CNF clauses: {len(cnf_clauses)}")
+        if edge_weights:
+            print(f"Custom edge weights: {edge_weights}")
     q = _clauses_to_q(cnf_clauses, syms)
     return q, clause_weights
 
 
-def build_alice_q(
+def _build_alice_q(
     start: int,
     goal: int,
     T: int,
     V: int,
     symbols: List[Expr] | None = None,
     print_cnf_clauses: bool = False,
+    hard_clause_weight: float = DEFAULT_HARD_CLAUSE_WEIGHT,
 ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Internal helper: Build Alice's Q matrix from start/goal constraints.
+
+    Use build_alice_q() with PrivatePathInfo for the validated public API.
+    """
     syms = symbols or ordered_symbols(T, V)
     formulas = alice_physics(start, goal, T, V)
     cnf_clauses = _flatten_cnf_clauses(formulas)
-    clause_weights = _clause_weights_for_cnf(cnf_clauses)
+    clause_weights = _clause_weights_for_cnf(
+        cnf_clauses, hard_clause_weight=hard_clause_weight
+    )
     if print_cnf_clauses:
         print("=== build_alice_q: Alice physics CNF clauses ===")
         clause_idx = 0
@@ -517,7 +582,7 @@ def build_alice_q(
     return q, clause_weights
 
 
-def build_q(
+def _build_q(
     start: int,
     goal: int,
     T: int,
@@ -526,20 +591,252 @@ def build_q(
     use_edge_domain: bool = False,
 ) -> Tuple[np.ndarray, List[Expr], Dict[str, np.ndarray]]:
     """
-    Build full MatSat Q by vertically concatenating:
-      1) physics clauses
-      2) bob edge-state clauses
-      3) alice start/goal clauses
+    Internal helper: Build full MatSat Q by vertically concatenating components.
+
+    Use build_q() with PrivatePathInfo for the validated public API.
     """
     directed_pairs = directed_pairs_from_edges(edges, V) if use_edge_domain else None
     syms = ordered_symbols(T, V, directed_pairs=directed_pairs)
     q_physics, w_physics = build_physics_q(
         T, V, symbols=syms, directed_pairs=directed_pairs
     )
-    q_bob, w_bob = build_bob_q(edges, T, V, symbols=syms, directed_pairs=directed_pairs)
-    q_alice, w_alice = build_alice_q(start, goal, T, V, symbols=syms)
+    q_bob, w_bob = _build_bob_q(
+        edges, T, V, symbols=syms, directed_pairs=directed_pairs
+    )
+    q_alice, w_alice = _build_alice_q(start, goal, T, V, symbols=syms)
     q_full = np.concatenate([q_physics, q_bob, q_alice], axis=0)
     w_full = np.concatenate([w_physics, w_bob, w_alice], axis=0)
+    return (
+        q_full,
+        syms,
+        {
+            "physics": q_physics,
+            "bob": q_bob,
+            "alice": q_alice,
+            "physics_weights": w_physics,
+            "bob_weights": w_bob,
+            "alice_weights": w_alice,
+            "weights": w_full,
+        },
+    )
+
+
+# =============================================================================
+# Public API: PrivatePathInfo-based functions with validation
+# =============================================================================
+
+
+def build_alice_q(
+    info: PrivatePathInfo,
+    start: int,
+    goal: int,
+    symbols: List[Expr] | None = None,
+    print_cnf_clauses: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build Alice's Q matrix using shared config from PrivatePathInfo.
+
+    Args:
+        info: Shared path-finding configuration (T, V, edge domain)
+        start: Alice's private start vertex
+        goal: Alice's private goal vertex
+        symbols: Optional pre-computed symbol list
+        print_cnf_clauses: If True, print debug info
+
+    Returns:
+        Tuple of (Q matrix, clause weights array)
+
+    Raises:
+        AssertionError: If inputs are invalid
+    """
+    # Validate PrivatePathInfo
+    assert info is not None, "info (PrivatePathInfo) is required"
+    assert info.T >= 0, f"info.T must be >= 0, got {info.T}"
+    assert info.V >= 1, f"info.V must be >= 1, got {info.V}"
+
+    # Validate Alice's private inputs
+    assert isinstance(start, int), f"start must be int, got {type(start)}"
+    assert isinstance(goal, int), f"goal must be int, got {type(goal)}"
+    assert 0 <= start < info.V, f"start must be in [0, {info.V-1}], got {start}"
+    assert 0 <= goal < info.V, f"goal must be in [0, {info.V-1}], got {goal}"
+
+    # Compute hard clause weight based on number of parties
+    hard_weight = compute_hard_clause_weight(info.num_parties)
+
+    return _build_alice_q(
+        start=start,
+        goal=goal,
+        T=info.T,
+        V=info.V,
+        symbols=symbols,
+        print_cnf_clauses=print_cnf_clauses,
+        hard_clause_weight=hard_weight,
+    )
+
+
+def build_bob_q(
+    info: PrivatePathInfo,
+    edges: List[Edge],
+    symbols: List[Expr] | None = None,
+    print_cnf_clauses: bool = False,
+    normalize_weights: bool = True,
+    weight_budget: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build Bob's Q matrix using shared config from PrivatePathInfo.
+
+    Edge weights (if provided on Edge objects) are used for ~Allowed(u,v) clauses.
+    This allows Bob to assign relative importance to different edges.
+
+    Weights are automatically normalized to sum to weight_budget (default 1.0).
+    Edges without explicit weights are assigned equal share of the budget.
+
+    Args:
+        info: Shared path-finding configuration (T, V, edge domain)
+        edges: Bob's private edges with states (and optional weights)
+        symbols: Optional pre-computed symbol list
+        print_cnf_clauses: If True, print debug info
+        normalize_weights: If True (default), normalize edge weights to sum to weight_budget
+        weight_budget: Total weight budget for soft clauses (default 1.0)
+
+    Returns:
+        Tuple of (Q matrix, clause weights array)
+
+    Raises:
+        AssertionError: If inputs are invalid
+    """
+    # Validate PrivatePathInfo
+    assert info is not None, "info (PrivatePathInfo) is required"
+    assert info.T >= 0, f"info.T must be >= 0, got {info.T}"
+    assert info.V >= 1, f"info.V must be >= 1, got {info.V}"
+
+    # Validate Bob's private edges
+    assert edges is not None, "edges list is required"
+    assert isinstance(edges, list), f"edges must be a list, got {type(edges)}"
+    for i, edge in enumerate(edges):
+        assert isinstance(edge, Edge), f"edges[{i}] must be Edge, got {type(edge)}"
+        assert (
+            0 <= edge.vertex1.id < info.V
+        ), f"edges[{i}].vertex1.id must be in [0, {info.V-1}], got {edge.vertex1.id}"
+        assert (
+            0 <= edge.vertex2.id < info.V
+        ), f"edges[{i}].vertex2.id must be in [0, {info.V-1}], got {edge.vertex2.id}"
+        assert edge.state in (
+            EdgeState.TRAVERSABLE,
+            EdgeState.BLOCKED,
+            EdgeState.NO_EDGE,
+        ), f"edges[{i}].state must be TRAVERSABLE, BLOCKED, or NO_EDGE, got {edge.state}"
+
+    # Normalize edge weights to sum to weight_budget
+    if normalize_weights and edges:
+        edges = normalize_edge_weights(edges, total_budget=weight_budget)
+
+    # Get directed pairs from edge domain if enabled
+    directed_pairs = info.edge_domain_pairs() if info.use_edge_domain else None
+
+    # Compute hard clause weight based on number of parties
+    hard_weight = compute_hard_clause_weight(info.num_parties)
+
+    return _build_bob_q(
+        edges=edges,
+        T=info.T,
+        V=info.V,
+        symbols=symbols,
+        directed_pairs=directed_pairs,
+        print_cnf_clauses=print_cnf_clauses,
+        hard_clause_weight=hard_weight,
+    )
+
+
+def build_q(
+    info: PrivatePathInfo,
+    start: int,
+    goal: int,
+    edges: List[Edge],
+    print_cnf_clauses: bool = False,
+) -> Tuple[np.ndarray, List[Expr], Dict[str, np.ndarray]]:
+    """
+    Build full MatSat Q matrix using shared config from PrivatePathInfo.
+
+    Combines physics, Bob's edge constraints, and Alice's start/goal constraints.
+
+    Args:
+        info: Shared path-finding configuration (T, V, edge domain)
+        start: Alice's private start vertex
+        goal: Alice's private goal vertex
+        edges: Bob's private edges with states (and optional weights)
+        print_cnf_clauses: If True, print debug info for all components
+
+    Returns:
+        Tuple of (full Q matrix, symbols list, component dict)
+
+    Raises:
+        AssertionError: If inputs are invalid
+    """
+    # Validate PrivatePathInfo
+    assert info is not None, "info (PrivatePathInfo) is required"
+    assert info.T >= 0, f"info.T must be >= 0, got {info.T}"
+    assert info.V >= 1, f"info.V must be >= 1, got {info.V}"
+
+    # Validate Alice's private inputs
+    assert isinstance(start, int), f"start must be int, got {type(start)}"
+    assert isinstance(goal, int), f"goal must be int, got {type(goal)}"
+    assert 0 <= start < info.V, f"start must be in [0, {info.V-1}], got {start}"
+    assert 0 <= goal < info.V, f"goal must be in [0, {info.V-1}], got {goal}"
+
+    # Validate Bob's private edges
+    assert edges is not None, "edges list is required"
+    assert isinstance(edges, list), f"edges must be a list, got {type(edges)}"
+    for i, edge in enumerate(edges):
+        assert isinstance(edge, Edge), f"edges[{i}] must be Edge, got {type(edge)}"
+        assert (
+            0 <= edge.vertex1.id < info.V
+        ), f"edges[{i}].vertex1.id must be in [0, {info.V-1}], got {edge.vertex1.id}"
+        assert (
+            0 <= edge.vertex2.id < info.V
+        ), f"edges[{i}].vertex2.id must be in [0, {info.V-1}], got {edge.vertex2.id}"
+
+    # Get directed pairs from edge domain if enabled
+    directed_pairs = info.edge_domain_pairs() if info.use_edge_domain else None
+
+    # Build symbol list
+    syms = ordered_symbols(info.T, info.V, directed_pairs=directed_pairs)
+
+    # Compute hard clause weight based on number of parties
+    hard_weight = compute_hard_clause_weight(info.num_parties)
+
+    # Build component Q matrices
+    q_physics, w_physics = build_physics_q(
+        info.T,
+        info.V,
+        symbols=syms,
+        directed_pairs=directed_pairs,
+        print_cnf_clauses=print_cnf_clauses,
+        hard_clause_weight=hard_weight,
+    )
+    q_bob, w_bob = _build_bob_q(
+        edges,
+        info.T,
+        info.V,
+        symbols=syms,
+        directed_pairs=directed_pairs,
+        print_cnf_clauses=print_cnf_clauses,
+        hard_clause_weight=hard_weight,
+    )
+    q_alice, w_alice = _build_alice_q(
+        start,
+        goal,
+        info.T,
+        info.V,
+        symbols=syms,
+        print_cnf_clauses=print_cnf_clauses,
+        hard_clause_weight=hard_weight,
+    )
+
+    # Concatenate
+    q_full = np.concatenate([q_physics, q_bob, q_alice], axis=0)
+    w_full = np.concatenate([w_physics, w_bob, w_alice], axis=0)
+
     return (
         q_full,
         syms,

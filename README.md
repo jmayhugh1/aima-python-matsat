@@ -185,6 +185,335 @@ Here is a table of the implemented data structures, the figure, name of the impl
 | 18.2   | waiting_decision_tree           | [`learning.py`][learning] |
 
 
+## Private Path Query: Concise Position-Bit Encoding
+
+The private path query logic now uses a logarithmic state encoding for position.
+Instead of one Boolean per vertex (`At(t, v)`), we represent the vertex id at time `t`
+in binary using `PosBit(t, k)`, where `k=0` is the least-significant bit.
+
+### Intuition for newcomers
+
+The old one-hot representation stores a position by turning on exactly one bit from a
+length-`V` vector. The new representation stores the same position as a binary number
+using only `ceil(log2(V))` bits.
+
+At each timestep:
+
+- one-hot: `[0, 0, 1, 0, 0, 0, 0, 0]` means vertex `2`
+- bit encoding (`V=8`, 3 bits): `[0, 1, 0]` means vertex `2`
+
+Both represent one vertex; the bit form just needs fewer variables.
+
+### Worked comparison: `T = 8`, `V = 8`
+
+Assume dense directed moves (`u != v`), so there are `8 * 7 = 56` directed pairs.
+
+#### Old encoding (one-hot + explicit action vars)
+
+Variables:
+
+- `At(t, v)`: `(T+1)*V = 9*8 = 72`
+- `Move(t, u, v)`: `T*V*(V-1) = 8*56 = 448`
+- `Wait(t, v)`: `T*V = 8*8 = 64`
+- `Active(u, v)`: `56`
+- `Allowed(u, v)`: `56`
+- total: `72 + 448 + 64 + 56 + 56 = 696`
+
+Large clause source (before CNF expansion of other formulas):
+
+- exactly-one on `At` at each time: 9 AMO/ALO groups over 8 literals each  
+  (`1 + C(8,2) = 29` clauses per time) -> `9*29 = 261`
+- exactly-one action at each `t` over `56 + 8 = 64` literals  
+  (`1 + C(64,2) = 2017` clauses per time) -> `8*2017 = 16,136`
+
+So the action AMO dominates quickly.
+
+#### New encoding (position bits + direct transitions)
+
+Here `b = ceil(log2(8)) = 3`.
+
+Variables:
+
+- `PosBit(t, k)`: `(T+1)*b = 9*3 = 27`
+- `Active(u, v)`: `56`
+- `Allowed(u, v)`: `56`
+- total: `27 + 56 + 56 = 139`
+
+Compared to 696 previously, that is about a **5x reduction in variable count** for this
+example.
+
+Also, because `V=8` is a power of two, there are **no invalid code range clauses**.
+
+### Mathematical formulation of the bit encoding
+
+#### Definitions
+
+Let \(V\) be the number of vertices (labeled \(0, 1, \ldots, V-1\)) and let
+\(b = \lceil \log_2 V \rceil\) be the number of bits needed to represent any vertex.
+
+Define the Boolean variable:
+
+\[
+\text{PosBit}(t, k) \in \{\text{True}, \text{False}\}
+\quad \text{for } t \in \{0, \ldots, T\},\; k \in \{0, \ldots, b-1\}
+\]
+
+The **position at time \(t\)** is reconstructed as:
+
+\[
+\text{pos}(t) = \sum_{k=0}^{b-1} 2^k \cdot [\![\text{PosBit}(t, k)]\!]
+\]
+
+where \([\![P]\!] = 1\) if \(P\) is true, else \(0\).
+
+#### Equality predicate
+
+To express "\(\text{pos}(t) = u\)" for a constant vertex \(u\), let \(u_k\) denote
+the \(k\)-th bit of \(u\) (i.e., \(u_k = \lfloor u / 2^k \rfloor \mod 2\)). Then:
+
+\[
+\text{pos}(t) = u
+\quad\Longleftrightarrow\quad
+\bigwedge_{k=0}^{b-1} \bigl(\text{PosBit}(t, k) = u_k\bigr)
+\]
+
+As a propositional formula this is a conjunction of literals:
+
+\[
+\bigwedge_{k=0}^{b-1}
+\begin{cases}
+\text{PosBit}(t, k) & \text{if } u_k = 1 \\
+\lnot\,\text{PosBit}(t, k) & \text{if } u_k = 0
+\end{cases}
+\]
+
+#### Range restriction
+
+When \(V\) is not a power of two, codes \(c \in \{V, V+1, \ldots, 2^b - 1\}\) are
+invalid. For each such \(c\), add a clause forbidding that exact bit pattern:
+
+\[
+\bigvee_{k=0}^{b-1}
+\begin{cases}
+\lnot\,\text{PosBit}(t, k) & \text{if } c_k = 1 \\
+\text{PosBit}(t, k) & \text{if } c_k = 0
+\end{cases}
+\]
+
+This clause is the negation of "\(\text{pos}(t) = c\)", forcing at least one bit to
+differ from \(c\).
+
+#### Transition feasibility
+
+Let \(\text{adj}(u)\) be the set of successors of vertex \(u\), including \(u\)
+itself (to allow waiting). The constraint is:
+
+\[
+\text{pos}(t) = u
+\;\;\Longrightarrow\;\;
+\bigvee_{v \in \text{adj}(u)} \bigl(\text{pos}(t+1) = v\bigr)
+\]
+
+Expanding definitions and converting to CNF produces the actual clauses.
+
+#### Start and goal fixing
+
+To force \(\text{pos}(0) = s\) and \(\text{pos}(T) = g\), emit **unit clauses** for
+each bit:
+
+\[
+\text{PosBit}(0, k) \text{ or } \lnot\text{PosBit}(0, k)
+\quad\text{depending on } s_k
+\]
+
+and similarly for \(g\) at time \(T\).
+
+---
+
+### Worked example: \(V = 5\), \(T = 2\)
+
+Since \(V = 5\), we have \(b = \lceil \log_2 5 \rceil = 3\) bits.
+
+The vertices and their binary codes are:
+
+| vertex | binary (\(k = 2, 1, 0\)) |
+|--------|--------------------------|
+| 0      | 000                      |
+| 1      | 001                      |
+| 2      | 010                      |
+| 3      | 011                      |
+| 4      | 100                      |
+
+Invalid codes (must be forbidden): 5 = 101, 6 = 110, 7 = 111.
+
+#### Encoding a position
+
+Suppose the agent is at vertex 3 at time \(t = 1\). Then:
+
+\[
+\text{pos}(1) = 3 = 0 \cdot 4 + 1 \cdot 2 + 1 \cdot 1
+\]
+
+The corresponding literal values are:
+
+- \(\text{PosBit}(1, 0) = \text{True}\) (bit 0 of 3 is 1)
+- \(\text{PosBit}(1, 1) = \text{True}\) (bit 1 of 3 is 1)
+- \(\text{PosBit}(1, 2) = \text{False}\) (bit 2 of 3 is 0)
+
+The equality "\(\text{pos}(1) = 3\)" is the conjunction:
+
+\[
+\text{PosBit}(1, 0) \;\land\; \text{PosBit}(1, 1) \;\land\; \lnot\text{PosBit}(1, 2)
+\]
+
+#### Why AMO (at-most-one) is implicit
+
+In the old one-hot encoding, we needed explicit constraints to ensure the agent is at
+exactly one vertex per timestep:
+
+- **ALO (at-least-one):** \(\text{At}(t, 0) \lor \text{At}(t, 1) \lor \cdots \lor \text{At}(t, V-1)\)
+- **AMO (at-most-one):** \(\lnot\text{At}(t, i) \lor \lnot\text{At}(t, j)\) for all \(i < j\)
+
+The AMO constraints alone require \(\binom{V}{2} = O(V^2)\) clauses per timestep.
+
+**With bit encoding, AMO is free.** Here's why:
+
+Any Boolean assignment to the \(b\) bits \(\text{PosBit}(t, 0), \ldots, \text{PosBit}(t, b-1)\)
+defines exactly one integer via:
+
+\[
+\text{pos}(t) = \sum_{k=0}^{b-1} 2^k \cdot [\![\text{PosBit}(t, k)]\!]
+\]
+
+This is a **bijection** between \(\{0,1\}^b\) and \(\{0, 1, \ldots, 2^b - 1\}\).
+There is no way for the bits to simultaneously represent two different vertices.
+
+For example, with \(b = 3\) bits at time \(t = 1\):
+
+| Assignment                    | Decoded vertex |
+|-------------------------------|----------------|
+| (False, False, False)         | 0              |
+| (True, False, False)          | 1              |
+| (False, True, False)          | 2              |
+| (True, True, False)           | 3              |
+| ...                           | ...            |
+
+Each row is one unique assignment → one unique vertex. The agent cannot be at vertex 2
+and vertex 3 simultaneously because that would require \(\text{PosBit}(1, 0)\) to be
+both False (for 2 = 010) and True (for 3 = 011) at the same time—a contradiction.
+
+**Summary:**
+- One-hot: AMO requires \(O(V^2)\) explicit pairwise clauses
+- Bit encoding: AMO is guaranteed by binary arithmetic—**zero clauses needed**
+
+The range restriction clauses then narrow the domain from \(\{0, \ldots, 2^b - 1\}\) to
+\(\{0, \ldots, V - 1\}\), completing the "exactly one valid vertex" guarantee.
+
+#### Range restriction clauses
+
+At each time \(t\), we forbid codes 5, 6, 7. Consider code 5 = 101:
+
+\[
+\text{forbid\_code}(t, 5) \;=\;
+\lnot\text{PosBit}(t, 0) \;\lor\; \text{PosBit}(t, 1) \;\lor\; \lnot\text{PosBit}(t, 2)
+\]
+
+This clause says: "at least one bit must differ from 101."
+
+Similarly for code 6 = 110:
+
+\[
+\text{forbid\_code}(t, 6) \;=\;
+\text{PosBit}(t, 0) \;\lor\; \lnot\text{PosBit}(t, 1) \;\lor\; \lnot\text{PosBit}(t, 2)
+\]
+
+And code 7 = 111:
+
+\[
+\text{forbid\_code}(t, 7) \;=\;
+\lnot\text{PosBit}(t, 0) \;\lor\; \lnot\text{PosBit}(t, 1) \;\lor\; \lnot\text{PosBit}(t, 2)
+\]
+
+With \(T = 2\), there are 3 timesteps (\(t = 0, 1, 2\)), so \(3 \times 3 = 9\) range
+restriction clauses total.
+
+#### Transition constraint example
+
+Suppose vertex 2 has neighbors \(\{1, 3, 4\}\), plus itself for waiting:
+\(\text{adj}(2) = \{1, 2, 3, 4\}\).
+
+The constraint at \(t = 0\) is:
+
+\[
+\text{pos}(0) = 2
+\;\;\Longrightarrow\;\;
+\text{pos}(1) = 1 \;\lor\; \text{pos}(1) = 2 \;\lor\; \text{pos}(1) = 3 \;\lor\; \text{pos}(1) = 4
+\]
+
+Expanding the left-hand side (\(2 = 010\)):
+
+\[
+\bigl(\lnot\text{PosBit}(0,0) \land \text{PosBit}(0,1) \land \lnot\text{PosBit}(0,2)\bigr)
+\;\Longrightarrow\;
+\text{(disjunction of successor codes)}
+\]
+
+When converted to CNF, this implication \(A \to B\) becomes \(\lnot A \lor B\), which
+is then distributed over the bit-level conjunctions.
+
+#### Start and goal fixing
+
+To fix start = 0 and goal = 4:
+
+**Start (\(s = 0 = 000\)):**
+
+\[
+\lnot\text{PosBit}(0, 0),\quad \lnot\text{PosBit}(0, 1),\quad \lnot\text{PosBit}(0, 2)
+\]
+
+**Goal (\(g = 4 = 100\)):**
+
+\[
+\lnot\text{PosBit}(2, 0),\quad \lnot\text{PosBit}(2, 1),\quad \text{PosBit}(2, 2)
+\]
+
+These are 6 unit clauses total.
+
+---
+
+### Correspondence to old encoding
+
+The meaning is preserved, but encoded compositionally:
+
+| Old variable       | New representation                                                    |
+|--------------------|-----------------------------------------------------------------------|
+| At(\(t\), \(v\))   | \(\bigwedge_k (\text{PosBit}(t,k) \leftrightarrow v_k)\)              |
+| Move(\(t\), \(u\), \(v\)) | \((\text{pos}(t) = u) \land (\text{pos}(t+1) = v)\) for \(u \ne v\) |
+| Wait(\(t\), \(v\)) | \((\text{pos}(t) = v) \land (\text{pos}(t+1) = v)\)                   |
+
+We no longer have explicit Move/Wait variables; transitions are implicit in
+consecutive position constraints.
+
+### Scaling properties
+
+For fixed horizon \(T\):
+
+| Encoding           | Position variables    | Action variables         |
+|--------------------|-----------------------|--------------------------|
+| Old (one-hot)      | \(O(T \cdot V)\)      | \(O(T \cdot V^2)\) dense |
+| New (bit)          | \(O(T \cdot \log V)\) | none (implicit)          |
+
+This logarithmic reduction is why the bit encoding scales better as \(V\) grows.
+
+### Edge cases
+
+- **\(V = 1\)**: \(b = 1\); only code 0 is valid. No range restriction needed.
+- **\(V\) power of two**: No invalid codes, so no range restriction clauses.
+- **\(T = 0\)**: No transitions; SAT iff start = goal.
+- **Decoding**: \(\text{path}[t] = \sum_k 2^k \cdot [\![\text{PosBit}(t,k)]\!]\),
+  guaranteed \(< V\) when range clauses are satisfied.
+
+
 # Acknowledgements
 
 Many thanks for contributions over the years. I got bug reports, corrected code, and other support from Darius Bacon, Phil Ruggera, Peng Shao, Amit Patil, Ted Nienstedt, Jim Martin, Ben Catanzariti, and others. Now that the project is on GitHub, you can see the [contributors](https://github.com/aimacode/aima-python/graphs/contributors) who are doing a great job of actively improving the project. Many thanks to all contributors, especially [@darius](https://github.com/darius), [@SnShine](https://github.com/SnShine), [@reachtarunhere](https://github.com/reachtarunhere), [@antmarakis](https://github.com/antmarakis), [@Chipe1](https://github.com/Chipe1), [@ad71](https://github.com/ad71) and [@MariannaSpyrakou](https://github.com/MariannaSpyrakou).
