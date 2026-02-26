@@ -2,13 +2,18 @@ from private_path_query_utils import (
     compile_private_path_query,
     join_computation,
     Grid,
+    Graph,
+    GraphPath,
+    Vertex,
+    Edge,
+    EdgeState,
     Path,
     Protocol,
 )
 from pprint import pprint
 from agents import Thing, Agent
 from logic4e import PropKB
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from functools import lru_cache
 from math import isfinite, log, exp
 from collections import deque
@@ -247,6 +252,354 @@ class BayesMap:
                         queue.append((nx, ny))
 
         return False
+
+
+class BayesGraphMap:
+    """Store log odds probability map for graph edges (blocked probability)."""
+
+    eps = 1e-12
+
+    def __init__(
+        self,
+        graph: Graph,
+        p_init: float = 0.2,
+    ):
+        """
+        Initialize a Bayesian belief map over graph edges.
+
+        Args:
+            graph: The Graph object defining vertices and edges.
+            p_init: Initial probability that each edge is blocked.
+        """
+        self.graph = graph
+        self.vertices = graph.vertices
+        self.p_init = p_init
+
+        # Store log-odds for each edge as (v1_id, v2_id) -> log_odds
+        # Use canonical ordering (min_id, max_id) for undirected edges
+        self.edge_log_odds: Dict[Tuple[int, int], float] = {}
+        for edge in graph.edges:
+            key = self._edge_key(edge)
+            self.edge_log_odds[key] = BayesMap.probability_to_log_odds(p_init)
+
+    def _edge_key(self, edge: Edge) -> Tuple[int, int]:
+        """Get canonical key for an edge (smaller id first for undirected)."""
+        v1, v2 = edge.vertex1.id, edge.vertex2.id
+        return (min(v1, v2), max(v1, v2))
+
+    def get_edge_probability(self, edge: Edge) -> float:
+        """Get the probability that an edge is blocked."""
+        key = self._edge_key(edge)
+        if key not in self.edge_log_odds:
+            return self.p_init
+        lo = self.edge_log_odds[key]
+        if isfinite(lo):
+            return BayesMap.log_odds_to_probability(lo)
+        return 1.0 if lo > 0 else 0.0
+
+    def get_edge_entropy(self, edge: Edge) -> float:
+        """Compute entropy for an edge's blocked probability."""
+        p = self.get_edge_probability(edge)
+        p = min(1.0 - self.eps, max(self.eps, p))
+        return -(p * log(p) + (1 - p) * log(1 - p))
+
+    def find_highest_entropy_path(
+        self, start: Vertex, goal: Vertex, max_length: int
+    ) -> Tuple[float, GraphPath]:
+        """
+        Find the path with highest total entropy from start to goal.
+
+        Args:
+            start: Starting vertex.
+            goal: Goal vertex.
+            max_length: Maximum number of edges in the path.
+
+        Returns:
+            Tuple of (total_entropy, GraphPath) or (0.0, None) if no path found.
+        """
+        # Build adjacency list
+        adj: Dict[int, List[Edge]] = {v.id: [] for v in self.vertices}
+        for edge in self.graph.edges:
+            adj[edge.vertex1.id].append(edge)
+            # Add reverse edge for undirected graph
+            reverse_edge = Edge(edge.vertex2, edge.vertex1, edge.state, edge.weight)
+            adj[edge.vertex2.id].append(reverse_edge)
+
+        best_entropy = float("-inf")
+        best_path: GraphPath | None = None
+
+        def dfs(
+            current: Vertex,
+            visited_edges: set,
+            path_edges: List[Edge],
+            total_entropy: float,
+        ):
+            nonlocal best_entropy, best_path
+
+            if current.id == goal.id and len(path_edges) > 0:
+                if total_entropy > best_entropy:
+                    best_entropy = total_entropy
+                    best_path = GraphPath(start=start, moves=list(path_edges))
+                return
+
+            if len(path_edges) >= max_length:
+                return
+
+            for edge in adj[current.id]:
+                key = self._edge_key(edge)
+                if key in visited_edges:
+                    continue
+
+                edge_entropy = self.get_edge_entropy(edge)
+                visited_edges.add(key)
+                path_edges.append(edge)
+
+                dfs(
+                    edge.vertex2,
+                    visited_edges,
+                    path_edges,
+                    total_entropy + edge_entropy,
+                )
+
+                path_edges.pop()
+                visited_edges.remove(key)
+
+        dfs(start, set(), [], 0.0)
+
+        if best_path is None:
+            return 0.0, None
+        return best_entropy, best_path
+
+    def find_highes_likelihood_safe_path(
+        self, start: Vertex, goal: Vertex, max_length: int
+    ) -> Tuple[float, GraphPath]:
+        """
+        Find the path from start to goal (up to max_length edges) that maximizes
+        the probability of being safe.
+
+        Path safety probability is:
+            P(path safe) = prod_e (1 - p_blocked(e))
+
+        We restrict to simple edge paths (no repeated undirected edge), matching the
+        style used in find_highest_entropy_path.
+        """
+        # Build adjacency list (undirected graph represented by directed Edge copies)
+        adj: Dict[int, List[Edge]] = {v.id: [] for v in self.vertices}
+        for edge in self.graph.edges:
+            adj[edge.vertex1.id].append(edge)
+            rev = Edge(edge.vertex2, edge.vertex1, edge.state, edge.weight)
+            adj[edge.vertex2.id].append(rev)
+
+        best_prob = float("-inf")
+        best_path = None
+
+        def dfs(
+            current: Vertex,
+            visited_edges: set,
+            path_edges: List[Edge],
+            path_safe_prob: float,
+        ):
+            nonlocal best_prob, best_path
+
+            # If we've reached the goal with at least one edge, evaluate candidate
+            if current.id == goal.id and len(path_edges) > 0:
+                if path_safe_prob > best_prob:
+                    best_prob = path_safe_prob
+                    best_path = GraphPath(start=start, moves=list(path_edges))
+                # We can return here to prefer shorter found paths at same prefix depth,
+                # or continue searching for longer alternatives; continuing is fine.
+                return
+
+            if len(path_edges) >= max_length:
+                return
+
+            for edge in adj[current.id]:
+                key = self._edge_key(edge)  # canonical key for undirected edge
+                if key in visited_edges:
+                    continue
+
+                p_blocked = self.get_edge_probability(edge)
+                p_safe_edge = max(0.0, min(1.0, 1.0 - p_blocked))
+                new_prob = path_safe_prob * p_safe_edge
+
+                visited_edges.add(key)
+                path_edges.append(edge)
+
+                dfs(edge.vertex2, visited_edges, path_edges, new_prob)
+
+                path_edges.pop()
+                visited_edges.remove(key)
+
+        dfs(start, set(), [], 1.0)
+
+        if best_path is None:
+            return 0.0, None
+        return best_prob, best_path
+
+    def find_random_path(
+        self, start: Vertex, goal: Vertex, max_length: int
+    ) -> Tuple[float, GraphPath]:
+        """
+        Sample a random valid path from start to goal with at most max_length edges.
+
+        Returns:
+            (safe_probability, GraphPath) for the sampled path, or (0.0, None) if
+            no path is found.
+
+        Notes:
+        - Uses simple edge paths (no repeated undirected edge).
+        - This samples from DFS-discovered path set (uniform over discovered paths
+        if we enumerate all and pick one uniformly).
+        """
+        import random
+
+        # Build adjacency list (undirected graph represented by directed Edge copies)
+        adj: Dict[int, List[Edge]] = {v.id: [] for v in self.vertices}
+        for edge in self.graph.edges:
+            adj[edge.vertex1.id].append(edge)
+            rev = Edge(edge.vertex2, edge.vertex1, edge.state, edge.weight)
+            adj[edge.vertex2.id].append(rev)
+
+        candidates: List[Tuple[float, GraphPath]] = []
+
+        def dfs(
+            current: Vertex,
+            visited_edges: set,
+            path_edges: List[Edge],
+            path_safe_prob: float,
+        ):
+            if current.id == goal.id and len(path_edges) > 0:
+                candidates.append(
+                    (path_safe_prob, GraphPath(start=start, moves=list(path_edges)))
+                )
+                return
+
+            if len(path_edges) >= max_length:
+                return
+
+            # Shuffle to randomize exploration order
+            edges = list(adj[current.id])
+            random.shuffle(edges)
+
+            for edge in edges:
+                key = self._edge_key(edge)
+                if key in visited_edges:
+                    continue
+
+                p_blocked = self.get_edge_probability(edge)
+                p_safe_edge = max(0.0, min(1.0, 1.0 - p_blocked))
+                new_prob = path_safe_prob * p_safe_edge
+
+                visited_edges.add(key)
+                path_edges.append(edge)
+
+                dfs(edge.vertex2, visited_edges, path_edges, new_prob)
+
+                path_edges.pop()
+                visited_edges.remove(key)
+
+        dfs(start, set(), [], 1.0)
+
+        if not candidates:
+            return 0.0, None
+
+        # Uniform random choice among valid paths found
+        return random.choice(candidates)
+
+    def update_probabilities(self, path: GraphPath, safe: bool):
+        """
+        Update edge probabilities based on path traversal result.
+
+        Args:
+            path: The GraphPath that was traversed.
+            safe: True if the path was safe (no blocked edges), False otherwise.
+        """
+        edges = path.moves
+
+        if safe:
+            # All edges on the path are safe => blocked prob = 0 => log-odds = -inf
+            for edge in edges:
+                key = self._edge_key(edge)
+                self.edge_log_odds[key] = -float("inf")
+            return
+
+        # Unsafe: at least one edge on the path is blocked
+        ps = []
+        for edge in edges:
+            ps.append(self.get_edge_probability(edge))
+
+        # P(all safe) = product of (1 - p_blocked) for each edge
+        p_all_safe = 1.0
+        for p in ps:
+            p_all_safe *= 1.0 - p
+
+        p_unsafe = 1.0 - p_all_safe
+        p_unsafe = max(p_unsafe, self.eps)
+
+        # Update each edge: p'_k = p_k / P(unsafe)
+        for edge, p in zip(edges, ps):
+            p_post = p / p_unsafe
+            p_post = min(1.0 - self.eps, max(self.eps, p_post))
+            key = self._edge_key(edge)
+            self.edge_log_odds[key] = BayesMap.probability_to_log_odds(p_post)
+
+    def to_graph(self) -> Graph:
+        """
+        Convert the current belief state to a Graph with edge states.
+
+        Edges with blocked probability < eps are marked TRAVERSABLE.
+        Edges with blocked probability > 1-eps are marked BLOCKED.
+        Others remain UNKNOWN.
+        """
+        new_edges = []
+        for edge in self.graph.edges:
+            p = self.get_edge_probability(edge)
+            if p <= self.eps:
+                state = EdgeState.TRAVERSABLE
+            elif p >= 1.0 - self.eps:
+                state = EdgeState.BLOCKED
+            else:
+                state = EdgeState.UNKNOWN
+            new_edges.append(Edge(edge.vertex1, edge.vertex2, state, edge.weight))
+
+        return Graph(vertices=self.vertices, edges=new_edges)
+
+    def check_viable_path(self, start: Vertex, goal: Vertex) -> bool:
+        """
+        Check if there's a path from start to goal using only safe edges.
+
+        An edge is considered safe if its blocked probability is <= eps.
+        """
+        # Build adjacency list of safe edges only
+        safe_adj: Dict[int, List[int]] = {v.id: [] for v in self.vertices}
+        for edge in self.graph.edges:
+            if self.get_edge_probability(edge) <= self.eps:
+                safe_adj[edge.vertex1.id].append(edge.vertex2.id)
+                safe_adj[edge.vertex2.id].append(edge.vertex1.id)
+
+        # BFS
+        queue = deque([start.id])
+        visited = set()
+        while queue:
+            current = queue.popleft()
+            if current in visited:
+                continue
+            visited.add(current)
+            if current == goal.id:
+                return True
+            for neighbor in safe_adj[current]:
+                if neighbor not in visited:
+                    queue.append(neighbor)
+
+        return False
+
+    def __str__(self):
+        """Print edge probabilities."""
+        lines = ["Edge blocked probabilities:"]
+        for edge in self.graph.edges:
+            p = self.get_edge_probability(edge)
+            lines.append(f"  {edge.vertex1.id} <-> {edge.vertex2.id}: {p:.3f}")
+        return "\n".join(lines)
 
 
 class Bob:
