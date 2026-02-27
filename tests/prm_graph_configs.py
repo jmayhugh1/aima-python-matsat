@@ -155,6 +155,7 @@ def find_random_path(
     goal_id: int,
     max_length: int,
     seed: int,
+    mandatory_blocked_indices: Set[int] = None,
 ) -> Tuple[List[int], Set[int]]:
     """
     Find a random path from start to goal using DFS with shuffled neighbors.
@@ -167,6 +168,8 @@ def find_random_path(
     # Build adjacency list: node_id -> list of (neighbor_id, edge_index)
     adj: Dict[int, List[Tuple[int, int]]] = {i: [] for i in range(num_nodes)}
     for idx, (v1, v2) in enumerate(edge_pairs):
+        if mandatory_blocked_indices and idx in mandatory_blocked_indices:
+            continue
         adj[v1].append((v2, idx))
         adj[v2].append((v1, idx))
 
@@ -220,6 +223,7 @@ def create_edges_with_random_safe_path(
     max_path_length: int,
     block_percent: int,
     seed: int = 42,
+    mandatory_blocked_indices: Set[int] = None,
 ) -> Tuple[List[Edge], List[int], Set[int]]:
     """
     Create edges with a randomly selected safe path and specified blocking percentage.
@@ -239,11 +243,16 @@ def create_edges_with_random_safe_path(
         goal_id=goal_id,
         max_length=max_path_length,
         seed=seed,
+        mandatory_blocked_indices=mandatory_blocked_indices,
     )
 
     # Now create edges with blocking
     random.seed(seed + 1000)  # Different seed for blocking randomization
     non_path_indices = [i for i in range(len(edge_pairs)) if i not in path_edge_indices]
+    
+    if mandatory_blocked_indices:
+        # These are already blocked, remove them from indices to randomly block
+        non_path_indices = [i for i in non_path_indices if i not in mandatory_blocked_indices]
 
     if block_percent == 100:
         indices_to_block = set(non_path_indices)
@@ -255,6 +264,8 @@ def create_edges_with_random_safe_path(
     for i, (v1, v2) in enumerate(edge_pairs):
         if i in path_edge_indices:
             state = EdgeState.TRAVERSABLE
+        elif mandatory_blocked_indices and i in mandatory_blocked_indices:
+            state = EdgeState.BLOCKED
         elif i in indices_to_block:
             state = EdgeState.BLOCKED
         else:
