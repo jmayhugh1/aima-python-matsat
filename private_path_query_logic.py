@@ -207,25 +207,51 @@ def physics_bits(
         if u not in adj[u]:
             adj[u].append(u)
 
-    # 2) Transition feasibility: pos(t)=u -> OR_{v in adj[u]} pos(t+1)=v
+    # 2) Transition feasibility: Forbid moves to non-neighbors.
+    # range_restriction ensures pos(t+1) is a valid vertex v in [0, V-1].
+    # By forbidding all v not in adj[u], we force pos(t+1) to be in adj[u].
     for t in range(T):
         for u in range(V):
-            lhs = eq_pos_const(t, u, b)
-            succs = adj[u]
-            rhs = eq_pos_const(t + 1, succs[0], b)
-            for v in succs[1:]:
-                rhs = rhs | eq_pos_const(t + 1, v, b)
-            formulas.append(implies(lhs, rhs))
+            # For each v not in Adj(u), forbid (pos(t)=u AND pos(t+1)=v)
+            # This is encoded as a single clause: (~Eq(pos(t),u) OR ~Eq(pos(t+1),v))
+            for v in range(V):
+                if v not in adj[u]:
+                    # Build: NOT(Eq(t, u) AND Eq(t+1, v)) -> (~Eq(t, u) OR ~Eq(t+1, v))
+                    # This is a SINGLE clause of 2*b literals.
+                    clause = None
+                    for k in range(b):
+                        # Bit k of u
+                        bit_u = (u >> k) & 1
+                        lit_u = PosBit(t, k) if bit_u == 1 else ~PosBit(t, k)
+                        term_u = ~lit_u
+                        clause = term_u if clause is None else (clause | term_u)
+                        
+                        # Bit k of v
+                        bit_v = (v >> k) & 1
+                        lit_v = PosBit(t + 1, k) if bit_v == 1 else ~PosBit(t + 1, k)
+                        term_v = ~lit_v
+                        clause = clause | term_v
+                    formulas.append(clause)
 
     # 3) Edge legality and consistency.
     for t in range(T):
         for u, v in directed_pairs:
-            formulas.append(
-                implies(
-                    eq_pos_const(t, u, b) & eq_pos_const(t + 1, v, b),
-                    Allowed(u, v),
-                )
-            )
+            # (pos(t)=u & pos(t+1)=v) -> Allowed(u, v)
+            # CNF: (~Eq(t, u) OR ~Eq(t+1, v) OR Allowed(u, v))
+            # This is a SINGLE clause of 2*b + 1 literals.
+            clause = None
+            for k in range(b):
+                bit_u = (u >> k) & 1
+                lit_u = PosBit(t, k) if bit_u == 1 else ~PosBit(t, k)
+                term_u = ~lit_u
+                clause = term_u if clause is None else (clause | term_u)
+                
+                bit_v = (v >> k) & 1
+                lit_v = PosBit(t + 1, k) if bit_v == 1 else ~PosBit(t + 1, k)
+                term_v = ~lit_v
+                clause = clause | term_v
+            
+            formulas.append(clause | Allowed(u, v))
     for u, v in directed_pairs:
         formulas.append(implies(Allowed(u, v), Active(u, v)))
 
