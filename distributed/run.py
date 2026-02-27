@@ -4,6 +4,7 @@ import sys
 import os
 import pickle
 import struct
+import json
 from typing import List
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -30,6 +31,7 @@ from tests.private_path_query_test_helpers import (
     _unknown_domain_edges_from_graph,
     _print_assignments_from_u_vector
 )
+from private_path_query_logic import assignment_from_u_vector, decode_path_from_assignment
 from rich.console import Console
 
 console = Console(force_terminal=True)
@@ -53,113 +55,12 @@ async def recv_msg(reader) -> object:
     return pickle.loads(data)
 
 
-from distributed.prm_generator import generate_prm, partition_edges, assign_bob_edge_weights
+from distributed.examples import load_example_from_json
 
 # ==============================================================================
 # GRAPH SETUP
 # ==============================================================================
 
-def build_bob_graph(b_id: int, num_parties: int, base_graph: Graph, seed: int) -> Tuple[Graph, dict]:
-    """
-    Returns the graph partition and exact edge weights for the given Bob.
-    Edges chosen for 'soft blocks' receive EdgeState.BLOCKED (generating ~Allowed)
-    with custom penalty weights. Other owned edges are TRAVERSABLE.
-    """
-    partitions = partition_edges(base_graph, num_parties, seed=seed)
-    
-    if b_id not in partitions:
-        return base_graph, {}
-        
-    bob_owned_edges = partitions[b_id]
-    
-    # Assign edge penalty weights from a 1.0 budget pool.
-    # We alter the seed specifically for each Bob so they block different subsets.
-    bob_weights = assign_bob_edge_weights(bob_owned_edges, total_budget=1.0, block_fraction=0.5, seed=seed + b_id)
-    
-    # Construct the finalized Bob graph mapped onto the MPC
-    final_edges = []
-    for edge in bob_owned_edges:
-        u, v = edge.vertex1.id, edge.vertex2.id
-        state = EdgeState.BLOCKED if (u, v) in bob_weights else EdgeState.TRAVERSABLE
-        final_edges.append(Edge(edge.vertex1, edge.vertex2, state))
-        
-    G_bob = Graph(vertices=base_graph.vertices, edges=final_edges)
-    return G_bob, bob_weights
-
-
-# ==============================================================================
-# PREDEFINED EXAMPLES
-# ==============================================================================
-
-def get_diamond_example(party_id: int, num_parties: int):
-    """
-    Diamond graph:  0 ---> 1 ---> 3
-                    0 ---> 2 ---> 3
-    
-    Alice wants: 0 -> 3
-    Bob 1 (party 1) owns top branch: edges 0<->1, 1<->3  (blocks all, budget=1.0)
-    Bob 2 (party 2) owns bottom branch: edges 0<->2, 2<->3 (blocks all, budget=1.0)
-    
-    Since both branches are blocked, the MaxSAT solver must pick the least-cost path.
-    """
-    V = 4
-    T = 3  # need 2 hops: 0->x->3, so T=3 timesteps
-    verts = [Vertex(i) for i in range(V)]
-    
-    # Full undirected graph (all edges known publicly as UNKNOWN domain)
-    all_edges = [
-        Edge(verts[0], verts[1], EdgeState.TRAVERSABLE),
-        Edge(verts[1], verts[0], EdgeState.TRAVERSABLE),
-        Edge(verts[0], verts[2], EdgeState.TRAVERSABLE),
-        Edge(verts[2], verts[0], EdgeState.TRAVERSABLE),
-        Edge(verts[1], verts[3], EdgeState.TRAVERSABLE),
-        Edge(verts[3], verts[1], EdgeState.TRAVERSABLE),
-        Edge(verts[2], verts[3], EdgeState.TRAVERSABLE),
-        Edge(verts[3], verts[2], EdgeState.TRAVERSABLE),
-    ]
-    base_graph = Graph(vertices=verts, edges=all_edges)
-    start_v = verts[0]
-    goal_v = verts[3]
-    
-    if party_id == 0:
-        # Alice: no graph, just start/goal
-        return base_graph, start_v, goal_v, V, T, None, None
-    elif party_id == 1:
-        # Bob 1: owns top branch (0↔1, 1↔3). Budget=1.0
-        # Strategy: heavily block forward direction to prevent 0→1→3 path
-        bob_edges = [
-            Edge(verts[0], verts[1], EdgeState.BLOCKED),
-            Edge(verts[1], verts[0], EdgeState.BLOCKED),
-            Edge(verts[1], verts[3], EdgeState.BLOCKED),
-            Edge(verts[3], verts[1], EdgeState.BLOCKED),
-        ]
-        bob_graph = Graph(vertices=verts, edges=bob_edges)
-        bob_weights = {
-            (0, 1): 0.6,   # heavy block on entry
-            (1, 3): 0.3,   # moderate block on exit
-            (1, 0): 0.05,  # light block on reverse
-            (3, 1): 0.05,  # light block on reverse
-        }  # sum = 1.0
-        return base_graph, start_v, goal_v, V, T, bob_graph, bob_weights
-    elif party_id == 2:
-        # Bob 2: owns bottom branch (0↔2, 2↔3). Budget=1.0
-        # Strategy: concentrate on blocking the 2→3 chokepoint
-        bob_edges = [
-            Edge(verts[0], verts[2], EdgeState.BLOCKED),
-            Edge(verts[2], verts[0], EdgeState.BLOCKED),
-            Edge(verts[2], verts[3], EdgeState.BLOCKED),
-            Edge(verts[3], verts[2], EdgeState.BLOCKED),
-        ]
-        bob_graph = Graph(vertices=verts, edges=bob_edges)
-        bob_weights = {
-            (0, 2): 0.1,   # light block on entry
-            (2, 3): 0.7,   # heavy block on chokepoint
-            (2, 0): 0.1,   # light block on reverse
-            (3, 2): 0.1,   # light block on reverse
-        }  # sum = 1.0
-        return base_graph, start_v, goal_v, V, T, bob_graph, bob_weights
-    else:
-        raise ValueError(f"Diamond example only supports 3 parties, got party_id={party_id}")
 
 # ==============================================================================
 # RUNNERS
@@ -203,19 +104,19 @@ async def run_sync_server(port, expected_clients):
 
 
 async def wait_for_start(host, port):
-    """Connects to the orchestrator (Bob 1) and waits for the START signal."""
+    """Connects to the orchestrator (Alice / party 0) and waits for the START signal."""
     connected = False
-    for attempt in range(10):
+    for attempt in range(60):
         try:
             reader, writer = await asyncio.open_connection(host, port)
             connected = True
             break
         except (ConnectionRefusedError, OSError) as e:
-            print(f"Connection attempt {attempt+1}/10 failed: {e}. Retrying in 2s...")
-            await asyncio.sleep(2)
+            print(f"Connection attempt {attempt+1}/60 failed: {e}. Retrying in 5s (waiting for Alice compilation)...")
+            await asyncio.sleep(5)
             
     if not connected:
-        raise RuntimeError(f"Failed to connect to Bob 1 after multiple attempts.")
+        raise RuntimeError(f"Failed to connect to Alice orchestrator after multiple attempts.")
 
     console.print("[bold yellow]Waiting for START signal...[/bold yellow]")
     msg = await recv_msg(reader)
@@ -228,23 +129,87 @@ async def wait_for_start(host, port):
 
 
 async def execute_query(args):
-    """Executes the actual MP-SPDZ protocol based on mode and role."""
+    """Executes the actual MP-SPDZ protocol or Waypoint Mission based on mode and role."""
     
-    # Resolve graph setup: predefined example or PRM generator
-    if args.example == "diamond":
-        base_graph, start_v, goal_v, V, T, bob_graph, bob_weights = get_diamond_example(
-            args.party_id, args.num_parties
-        )
-        console.print(f"[bold yellow]Using predefined DIAMOND graph: 0→1→3, 0→2→3[/bold yellow]")
+    if args.mode == "execute_waypoints":
+        # 3. Only the physically connected node (usually Alice, or invoked directly) executes ways
+        if args.party_id is not None and args.party_id != 0:
+            console.print("[dim]Execution is handled by the primary connected node (party 0). Bobs idle...[/dim]")
+            return
+
+        out_path = args.out_path
+        if not out_path and args.example:
+            if args.example in ["diamond", "sat"]:
+                waypoints_in_path = os.path.join(current_dir, "examples", args.example, "waypoints.json")
+            else: 
+                waypoints_in_path = os.path.join(os.path.dirname(args.example), "waypoints.json")
+                
+        try:
+            with open(waypoints_in_path, 'r') as f:
+                physical_waypoints = json.load(f)
+            console.print(f"[bold green]Loaded mapped waypoints successfully from {waypoints_in_path}[/bold green]")
+        except FileNotFoundError:
+            console.print(f"[bold red]Error: No previously computed waypoints.json found at {waypoints_in_path}. Run MatSAT solver first![/bold red]")
+            return
+            
+        try:
+            console.print("\n[bold cyan]Connecting to Surveyor ASV to execute waypoints...[/bold cyan]")
+            # Append local submodule path if available
+            sys.path.append(os.path.join(parent_dir, "searobotics_surveyor"))
+            from surveyor_lib.surveyor import Surveyor
+            
+            host = '192.168.0.50'
+            port = 8003
+            throttle = 60
+            
+            # Read ERP from spatial bounds or default
+            erp = tuple(physical_waypoints[0])
+            if args.spatial_bounds:
+                try:
+                    with open(args.spatial_bounds, 'r') as f:
+                        bounds = json.load(f)
+                    erp = tuple(bounds.get("erp", physical_waypoints[0]))
+                except Exception as e:
+                    console.print(f"[bold yellow]Failed to read ERP from bounds, defaulting to first waypoint: {e}[/bold yellow]")
+            
+            boat = Surveyor(host=host, port=port, sensors_to_use=[], record=False)
+            with boat:
+                console.print("[bold green]Surveyor Connected![/bold green]")
+                boat.send_waypoints(waypoints=physical_waypoints, erp=erp, throttle=throttle)
+                console.print(f"Uploaded {len(physical_waypoints)} waypoints. ERP set to {erp}")
+                
+                console.print("[bold cyan]Starting Mission on Robot...[/bold cyan]")
+                boat.set_waypoint_mode()
+                
+                import time
+                while True:
+                    state = boat.get_state()
+                    mode = state.get('Control Mode', 'Unknown')
+                    if mode == "Standby":
+                        console.print("\n[bold green]Waypoint mission completed (Returned to Standby)![/bold green]")
+                        break
+                    time.sleep(2)
+                    
+        except Exception as e:
+            console.print(f"[bold red]Surveyor execution failed: {e}[/bold red]")
+            
+        return
+        
+    # Resolve graph setup: predefined example required for MPC nodes
+    if not args.example:
+        console.print("[bold red]An --example JSON configuration is strictly required now. Exiting.[/bold red]")
+        sys.exit(1)
+        
+    if args.example in ["diamond", "sat"]:
+        # Backwards compatibility for the test scripts
+        json_path = os.path.join(current_dir, "examples", f"{args.example}", "graph.json")
     else:
-        V = args.num_vertices
-        T = args.horizon
-        console.print(f"[dim]Building PRM with V={V}, radius={args.prm_radius}, seed={args.seed}[/dim]")
-        base_graph = generate_prm(V, radius=args.prm_radius, seed=args.seed)
-        start_v = Vertex(0)
-        goal_v = Vertex(V - 1)
-        bob_graph = None
-        bob_weights = None
+        json_path = args.example
+        
+    base_graph, start_v, goal_v, V, T, bob_graph, bob_weights = load_example_from_json(
+        json_path, args.party_id, args.num_parties
+    )
+    console.print(f"[bold yellow]Using JSON graph from {json_path}[/bold yellow]")
     
     public_domain_edges = _unknown_domain_edges_from_graph(base_graph)
     
@@ -263,10 +228,16 @@ async def execute_query(args):
     # Build rows_per_id: [alice_rows, bob1_rows, bob2_rows, ...]
     bob_rows_list = []
     for b_id in range(1, args.num_parties):
-        if args.example == "diamond":
-            _, _, _, _, _, bg, _ = get_diamond_example(b_id, args.num_parties)
+        if not args.example:
+            console.print("[bold red]An --example JSON configuration is strictly required. Exiting.[/bold red]")
+            sys.exit(1)
+            
+        if args.example in ["diamond", "sat"]:
+            json_path = os.path.join(current_dir, "examples", f"{args.example}", "graph.json")
         else:
-            bg, _ = build_bob_graph(b_id, args.num_parties, base_graph, args.seed)
+            json_path = args.example
+        _, _, _, _, _, bg, _ = load_example_from_json(json_path, b_id, args.num_parties)
+            
         q_b, _ = build_bob_q(bg.to_directed_edges(), T, V, symbols=syms, directed_pairs=compact_pairs)
         bob_rows_list.append(q_b.shape[0])
         
@@ -287,6 +258,24 @@ async def execute_query(args):
 
     if args.mode == "matsat":
         if args.party_id == 0:
+            console.print("[bold cyan]Alice (party 0) compiling MatSAT solver before network sync...[/bold cyan]")
+            from private_path_query_utils import compile_find_safe_path
+            ok = await compile_find_safe_path(private_path_info=info, weighted=True)
+            if not ok:
+                console.print("[bold red]Alice compilation failed![/bold red]")
+                sys.exit(1)
+
+        # Sync before starting nodes!
+        sync_port = args.port + 100
+        if args.party_id == 0:
+            server_task = asyncio.create_task(run_sync_server(sync_port, args.num_parties - 1))
+            await asyncio.sleep(0.5)
+            console.print("[dim]Alice (party 0) orchestrator ready. Waiting for Bobs...[/dim]")
+            await server_task
+        else:
+            await wait_for_start(args.host, sync_port)
+
+        if args.party_id == 0:
             console.print(f"[bold cyan]Alice (party 0) inputs: start={start_v.id}, goal={goal_v.id}[/bold cyan]")
             result = await join_computation_find_safe_path(
                 id=args.party_id,
@@ -296,7 +285,7 @@ async def execute_query(args):
                 port=args.base_port,
                 host=args.host,
                 protocol=protocol,
-                compile_program=True,
+                compile_program=False,
                 weighted=True,
             )
         else:
@@ -333,23 +322,106 @@ async def execute_query(args):
                 V=V,
                 symbols=syms
             )
+            
+            # Extract and display the actual path
+            assignment = assignment_from_u_vector(
+                u_vector=result.u_vector, T=T, V=V, symbols=syms
+            )
+            path = decode_path_from_assignment(assignment, T=T, V=V)
+            console.print(f"\n[bold green]Extracted Path: {path}[/bold green]")
+            
+            # Save the integer path sequence
+            out_path = args.out_path
+            if not out_path and args.example:
+                if args.example in ["diamond", "sat"]:
+                    out_path = os.path.join(current_dir, "examples", args.example, "path.json")
+                else: 
+                    out_path = os.path.join(os.path.dirname(args.example), "path.json")
+                    
+            if out_path:
+                try:
+                    with open(out_path, 'w') as f:
+                        json.dump(path, f)
+                    console.print(f"[bold green]Saved abstract mathematical path sequence to {out_path}[/bold green]")
+                except Exception as e:
+                    console.print(f"[bold red]Failed to save path to {out_path}: {e}[/bold red]")
+                    
+            # 2. Automatically generate physical mapping if bounds are supplied
+            if args.spatial_bounds and args.example:
+                try:
+                    import sys
+                    sys.path.append(current_dir)
+                    from distributed.graph_embedder import generate_spatial_embedding
+                    
+                    bounds_file = args.spatial_bounds
+                    console.print(f"\n[bold cyan]Generating spatial embedding using boundaries from {bounds_file}...[/bold cyan]")
+                    
+                    # Compute mapping for the entire base graph
+                    coords_map = generate_spatial_embedding(base_graph, bounds_file)
+                    
+                    # Write the generalized coordinates layout mapping
+                    coords_out_path = os.path.join(os.path.dirname(out_path), "coordinates.json")
+                    with open(coords_out_path, 'w') as f:
+                        json.dump(coords_map, f, indent=2)
+                    
+                    # Convert the solved abstract path [0, 1, 2] -> physical waypoints [[lat, lon], ...]
+                    physical_waypoints = []
+                    for node_id in path:
+                        pt = coords_map[str(node_id)]
+                        physical_waypoints.append([pt["lat"], pt["lon"]])
+                        
+                    waypoints_out_path = os.path.join(os.path.dirname(out_path), "waypoints.json")
+                    with open(waypoints_out_path, 'w') as f:
+                        json.dump(physical_waypoints, f, indent=2)
+                        
+                    console.print(f"[bold green]Saved translated physical GPS coordinates to {waypoints_out_path}[/bold green]")
+                    
+                except Exception as e:
+                    console.print(f"[bold red]Failed to generate or save physical mapping: {e}[/bold red]")
 
     elif args.mode == "verifier":
         # Note: verifier mode requires recompiling verifier program.
         # But this script uses join_computation directly.
         from private_path_query_utils import compile_verifier
         if args.party_id == 0:
+            console.print("[bold cyan]Alice (party 0) compiling verifier before network sync...[/bold cyan]")
             # Recompile verifier if Alice
             await compile_verifier(args.num_parties, V, T, is_graph=True)
             
-            # Alice wants to verify this strict path
-            test_path = GraphPath(start=start_v, moves=[
-                Edge(start_v, Vertex(1)),
-                Edge(Vertex(1), Vertex(2)),
-                Edge(Vertex(2), goal_v)
-            ])
-            # Verifier graph mode expects `query_size` number of edges from Alice: each a (u, v) pair
-            path_str_payload = f"{start_v.id}\n1\n1\n2\n2\n3\n"
+        sync_port = args.port + 100
+        if args.party_id == 0:
+            server_task = asyncio.create_task(run_sync_server(sync_port, args.num_parties - 1))
+            await asyncio.sleep(0.5)
+            console.print("[dim]Alice (party 0) orchestrator ready. Waiting for Bobs...[/dim]")
+            await server_task
+        else:
+            await wait_for_start(args.host, sync_port)
+            
+        if args.party_id == 0:
+            # Alice wants to verify the node path sequence from the example graph
+            try:
+                with open(json_path, 'r') as f:
+                    example_data = json.load(f)
+                
+                # We expect the `alice_u_vector` to actually be an integer sequence representing the path
+                # Ex: [0, 1, 2] represents start=0, move 0->1, move 1->2
+                path_seq = example_data.get("alice_u_vector", [])
+                
+                if not path_seq or len(path_seq) < 2:
+                    console.print("[bold red]Verifier mode requires 'alice_u_vector' integer sequence in the JSON example. Exiting.[/bold red]")
+                    sys.exit(1)
+            except Exception as e:
+                console.print(f"[bold red]Failed to load alice_u_vector from {json_path}: {e}[/bold red]")
+                sys.exit(1)
+                
+            # Convert node sequence to Verifier Edge pair inputs
+            # format: start_node \n u1 \n v1 \n u2 \n v2 \n ...
+            payload_lines = [str(path_seq[0])]
+            for i in range(len(path_seq) - 1):
+                payload_lines.append(str(path_seq[i]))
+                payload_lines.append(str(path_seq[i + 1]))
+                
+            path_str_payload = "\n".join(payload_lines) + "\n"
             console.print(f"[dim]Alice inputs test path payload: {path_str_payload}[/dim]")
             result = await join_computation(
                 id=args.party_id,
@@ -361,12 +433,18 @@ async def execute_query(args):
                 program_name=ProgramName.VERIFIER
             )
         else:
-            bob_graph, _ = build_bob_graph(args.party_id, args.num_parties, base_graph, args.seed)
-            console.print(f"[dim]Bob {args.party_id} inputs PRM partition graph for Verification. Edges: {[str(e) for e in bob_graph.edges]}[/dim]")
+            if args.example:
+                # Use the loaded graph from the JSON example
+                b_graph = bob_graph
+            else:
+                console.print("[bold red]Verifier mode currently requires an --example JSON configuration. Exiting.[/bold red]")
+                sys.exit(1)
+            
+            console.print(f"[dim]Bob {args.party_id} inputs PRM partition graph for Verification. Edges: {[str(e) for e in b_graph.edges]}[/dim]")
             
             # For the verifier, Bob inputs a 1D array representing the flattened V*V adjacency matrix
             # where 2 = traversable, 1 = blocked, 0 = no edge.
-            adj_list = bob_graph.adjacency_list
+            adj_list = b_graph.adjacency_list
             bob_payload_str = "\n".join(str(int(adj_list[i][j])) for i in range(V) for j in range(V)) + "\n"
             
             result = await join_computation(
@@ -385,35 +463,88 @@ async def execute_query(args):
 
 
 async def main_async(args):
-    console.rule(f"[bold magenta]Starting {args.role.capitalize()} (Party {args.party_id}) - Mode: {args.mode}[/bold magenta]")
-    
-    sync_port = args.port + 100
-    
-    # 1. Orchestration — Alice (party 0) is the orchestrator
-    if args.party_id == 0:
-        # Alice starts the server and waits for everyone else
-        server_task = asyncio.create_task(run_sync_server(sync_port, args.num_parties - 1))
-        await asyncio.sleep(0.5)
-        console.print("[dim]Alice (party 0) orchestrator ready. Waiting for Bobs...[/dim]")
-        await server_task
-    else:
-        # Bobs connect to Alice's orchestrator
-        await wait_for_start(args.host, sync_port)
+    # Short-circuit networking/orchestration for execution-only mode
+    if args.mode == "execute_waypoints":
+        console.rule(f"[bold magenta]Starting Waypoint Execution[/bold magenta]")
+        # 3. Only the physically connected node (usually Alice, or invoked directly) executes ways
+        if args.party_id is not None and args.party_id != 0:
+            console.print("[dim]Execution is handled by the primary connected node (party 0). Bobs idle...[/dim]")
+            return
 
-    # 2. Execution
+        out_path = args.out_path
+        if not out_path and args.example:
+            if args.example in ["diamond", "sat"]:
+                waypoints_in_path = os.path.join(current_dir, "examples", args.example, "waypoints.json")
+            else:
+                waypoints_in_path = os.path.join(os.path.dirname(args.example), "waypoints.json")
+
+        try:
+            with open(waypoints_in_path, 'r') as f:
+                physical_waypoints = json.load(f)
+            console.print(f"[bold green]Loaded mapped waypoints successfully from {waypoints_in_path}[/bold green]")
+        except FileNotFoundError:
+            console.print(f"[bold red]Error: No previously computed waypoints.json found at {waypoints_in_path}. Run MatSAT solver first![/bold red]")
+            return
+
+        try:
+            console.print("\n[bold cyan]Connecting to Surveyor ASV to execute waypoints...[/bold cyan]")
+            # Append local submodule path if available
+            sys.path.append(os.path.join(parent_dir, "searobotics_surveyor"))
+            from surveyor_lib.surveyor import Surveyor
+
+            host = '192.168.0.50'
+            port = 8003
+            throttle = 60
+
+            # Read ERP from spatial bounds or default
+            erp = tuple(physical_waypoints[0])
+            if args.spatial_bounds:
+                try:
+                    with open(args.spatial_bounds, 'r') as f:
+                        bounds = json.load(f)
+                    erp = tuple(bounds.get("erp", physical_waypoints[0]))
+                except Exception as e:
+                    console.print(f"[bold yellow]Failed to read ERP from bounds, defaulting to first waypoint: {e}[/bold yellow]")
+
+            boat = Surveyor(host=host, port=port, sensors_to_use=[], record=False)
+            with boat:
+                console.print("[bold green]Surveyor Connected![/bold green]")
+                boat.send_waypoints(waypoints=physical_waypoints, erp=erp, throttle=throttle)
+                console.print(f"Uploaded {len(physical_waypoints)} waypoints. ERP set to {erp}")
+
+                console.print("[bold cyan]Starting Mission on Robot...[/bold cyan]")
+                boat.set_waypoint_mode()
+
+                import time
+                while True:
+                    state = boat.get_state()
+                    mode = state.get('Control Mode', 'Unknown')
+                    if mode == "Standby":
+                        console.print("\n[bold green]Waypoint mission completed (Returned to Standby)![/bold green]")
+                        break
+                    time.sleep(2)
+
+        except Exception as e:
+            console.print(f"[bold red]Surveyor execution failed: {e}[/bold red]")
+
+    console.rule(f"[bold magenta]Starting {args.role.capitalize()} (Party {args.party_id}) - Mode: {args.mode}[/bold magenta]")
+
+    # 2. Execution and Inline Orchestration
     await execute_query(args)
     
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Distributed MatSat/Verifier Run")
-    parser.add_argument("--role", choices=["alice", "bob"], required=True, help="Role to play")
-    parser.add_argument("--party_id", type=int, required=True, help="MPC Player ID (Alice=0, Bob=1..N)")
-    parser.add_argument("--num_parties", type=int, required=True, help="Total number of parties")
-    parser.add_argument("--host", required=True, help="Host IP/Hostname of Alice (Coordinator)")
+    parser.add_argument("--role", choices=["alice", "bob"], help="Role to play")
+    parser.add_argument("--party_id", type=int, help="MPC Player ID (Alice=0, Bob=1..N)")
+    parser.add_argument("--num_parties", type=int, help="Total number of parties")
+    parser.add_argument("--host", help="Host IP/Hostname of Alice (Coordinator)")
     parser.add_argument("--port", type=int, default=5000, help="Base Port to use (MP-SPDZ default 5000)")
     parser.add_argument("--protocol", choices=["shamir", "mascot"], default="mascot", help="MPC Protocol")
-    parser.add_argument("--mode", choices=["matsat", "verifier"], default="matsat", help="Action to perform")
-    parser.add_argument("--example", choices=["diamond"], default=None, help="Use a predefined graph example")
+    parser.add_argument("--mode", choices=["matsat", "verifier", "execute_waypoints"], default="matsat", help="Action to perform")
+    parser.add_argument("--example", default=None, help="Path to JSON predefined graph example, or 'diamond'/'sat'")
+    parser.add_argument("--out_path", default=None, help="Optional JSON path to save the completed graph traversal path")
+    parser.add_argument("--spatial_bounds", default=None, help="Optional bounding config JSON to transpile path directly into GPS coordinates")
     
     # Graph Generator arguments (used when --example is not set)
     parser.add_argument("--num_vertices", type=int, default=6, help="Vertices in the PRM graph")
